@@ -1,4 +1,4 @@
-export const TICKS_PER_BEAT = 960;
+export const TICKS_PER_BEAT = 3840;
 export const BEATS_PER_BAR = 4;
 export const TICKS_PER_BAR = TICKS_PER_BEAT * BEATS_PER_BAR;
 
@@ -11,7 +11,7 @@ export type DrumRole =
   | "perc"
   | "unknown";
 
-export type DrumEventSourceKind = "demo" | "audiotool-note";
+export type DrumEventSourceKind = "demo" | "audiotool-note" | "audiotool-pattern-step";
 
 export type DrumEventSource = {
   kind: DrumEventSourceKind;
@@ -28,34 +28,48 @@ export type DrumEvent = {
   pitch?: number;
   sampleName?: string;
   padName?: string;
+  stripName?: string;
+  regionName?: string;
+  trackName?: string;
   deviceName?: string;
+  deviceType?: string;
   role: DrumRole;
   confidence: number;
   source?: DrumEventSource;
 };
 
-export type GrooveParameters = {
-  snareDelayMs: number;
-  kickLoosenessMs: number;
-  kickTightness: number;
-  hatSwingMs: number;
-  hatVelocityAccent: number;
-  percussionPushPullMs: number;
-  velocityJitter: number;
-  ghostNoteProbability: number;
-  ghostNoteVelocity: number;
-  overallLoosenessMs: number;
+export type HatSubdivision = "quarter" | "eighth" | "sixteenth" | "mixed" | "none";
+
+export type HumanizerFrameworkId = "push-pull";
+
+export type HumanizerFrameworkParameters = {
+  hatDragMs: number;
+  hatOffbeatDragMs: number;
+  hatTimingJitterMs: number;
+  hatVelocityJitterMidi: number;
+  hatEighthDownbeatLiftMidi: number;
+  hatEighthOffbeatDipMidi: number;
+  hatSixteenthAccentsMidi: readonly [number, number, number, number];
+  hatSnareLiftMidi: number;
+  snarePushMs: number;
+  snareTimingJitterMs: number;
+  snareVelocityJitterMidi: number;
+  snareBeatFourLiftMidi: number;
+  kickVelocityJitterMidi: number;
+  kickDoubleDownbeatLiftMidi: number;
+  kickDoubleOffbeatFirstLiftMidi: number;
+  kickDoubleFollowDipMidi: number;
 };
 
-export type GroovePreset = {
-  id: string;
+export type HumanizerFramework = {
+  id: HumanizerFrameworkId;
   name: string;
   shortName: string;
   description: string;
-  parameters: GrooveParameters;
+  parameters: HumanizerFrameworkParameters;
 };
 
-export type GrooveChange = {
+export type HumanizerChange = {
   id: string;
   originalId?: string;
   role: DrumRole;
@@ -69,14 +83,16 @@ export type GrooveChange = {
   added: boolean;
 };
 
-export type GrooveResult = {
+export type HumanizerResult = {
   events: DrumEvent[];
-  changes: GrooveChange[];
+  changes: HumanizerChange[];
   explanation: string;
+  roleSummary: RoleSummary;
+  hatSubdivision: HatSubdivision;
 };
 
-export type GrooveEngineOptions = {
-  intensity: number;
+export type HumanizerEngineOptions = {
+  strength: number;
   tempoBpm: number;
   ticksPerBeat?: number;
   seed?: string;

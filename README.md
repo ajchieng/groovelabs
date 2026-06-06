@@ -1,14 +1,15 @@
 # GrooveLab
 
-GrooveLab is currently a first-pass Audiotool MIDI velocity humanizer. It gives you:
+GrooveLab is an Audiotool drum humanizer. The current framework is **Dilla-fy**:
 
-- A Vite + React + TypeScript app wired for `@audiotool/nexus`.
-- Audiotool OAuth boilerplate using the required `http://127.0.0.1:5173/` redirect.
-- A basic note reader for Audiotool `note` entities.
-- A MIDI-style velocity threshold, for example `+/-10`.
-- A deterministic reroll button so you can preview another random humanization pass.
-- A before/after velocity visualizer and write-back adapter for Nexus note entities.
-- A demo pattern so the UI and groove logic work before Audiotool credentials are added.
+- Detects kicks, snares/claps, and hats from GM pitch, names, and timing profiles.
+- Infers whether hats are mostly 4th, 8th, or 16th note subdivisions.
+- Lets you focus the preview/write pass on one Audiotool drum region.
+- Drags hats late, adds extra offbeat hat swing, and shapes velocity accents by subdivision.
+- Pulls snares slightly forward and lifts beat 4 over beat 2 when both backbeats exist.
+- Shapes close kick pairs so downbeats, or the first offbeat, speak a little louder.
+- Lets the strength control overdrive the framework up to 200% for exaggerated results.
+- Writes timing and velocity changes back to Audiotool `note` entities.
 
 ## Setup
 
@@ -47,28 +48,23 @@ GrooveLab is currently a first-pass Audiotool MIDI velocity humanizer. It gives 
 
 5. Open `http://127.0.0.1:5173/`. The app checks Audiotool auth on load.
 
-   - If you are not logged in, the first screen is a single Audiotool login button.
-   - If you are already logged in, the login screen is skipped.
-   - After login, the next screen asks for an Audiotool project URL.
+6. Paste an Audiotool beta studio project URL and open it.
 
-6. Paste an Audiotool project URL from `https://beta.audiotool.com/studio?project=...` and open it.
+7. Choose a drum region or **All regions**, choose **Dilla-fy**, set the strength, preview the changes, then click **Write Groove**.
 
-   The last project URL is remembered in browser local storage so repeat sessions are prefilled.
+The default Dilla-fy strength is intentionally dramatic at 140%. Pull it back for subtlety, or push it to 200% when you want the timing and velocity changes to be extreme.
 
-7. Set the velocity range, preview the changes, then click **Write Velocities**.
-
-The range uses MIDI velocity units from 0 to 127. A setting of `+/-10` means each note can move by up to 10 velocity units up or down. The app writes only the `velocity` field; timing, pitch, and duration are left unchanged.
+The write path updates existing notes from the loaded pattern state and current region selection. Rerolls preview from that loaded state so repeated writes do not keep pushing notes farther unless you reload the project after writing.
 
 ## Project Layout
 
-- `src/nexus/audiotoolClient.ts`: Nexus auth, project open, note extraction, and velocity write-back.
-- `src/engine/velocityHumanizer.ts`: The first MVP humanizer.
+- `src/nexus/audiotoolClient.ts`: Nexus auth, project open, note extraction, and transformed note write-back.
+- `src/engine/humanizerEngine.ts`: Framework engine and Dilla-fy timing/velocity rules.
 - `src/engine/roleDetection.ts`: MIDI/name/rhythm-based role classification.
-- `src/engine/grooveEngine.ts`: Advanced groove experiment kept aside for later.
-- `src/data/groovePresets.ts`: Starting preset definitions.
-- `src/components/VelocityVisualizer.tsx`: Before/after velocity view.
-- `src/App.tsx`: Hackathon-ready control surface.
+- `src/data/humanizerFrameworks.ts`: Humanizer framework definitions.
+- `src/components/GrooveVisualizer.tsx`: Before/after timing and velocity view.
+- `src/App.tsx`: Audiotool control surface.
 
 ## Notes
 
-The MVP write-back path updates existing Audiotool `note` entities only. Pattern-device-specific transforms such as `machinistePattern` can be added in the adapter after you inspect the exact project entities you want to target.
+The current implementation assumes 4/4 drum patterns. Unknown percussion and non-drum notes are left unchanged.

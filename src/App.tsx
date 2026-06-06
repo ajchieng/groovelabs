@@ -9,40 +9,39 @@ import {
   Save,
   SlidersHorizontal,
 } from "lucide-react";
-import { VelocityVisualizer } from "./components/VelocityVisualizer";
-import {
-  humanizeVelocities,
-  roleLabel,
-  velocityToMidi,
-} from "./engine/velocityHumanizer";
+import { GrooveVisualizer } from "./components/GrooveVisualizer";
+import { defaultFramework, humanizerFrameworks } from "./data/humanizerFrameworks";
+import { hatSubdivisionLabel, roleLabel, velocityToMidi } from "./engine/drumFormat";
+import { applyHumanizerFramework } from "./engine/humanizerEngine";
 import {
   AudiotoolProject,
+  type AudiotoolRegion,
   type AudiotoolSession,
   createAudiotoolSession,
 } from "./nexus/audiotoolClient";
-import type { DrumEvent, DrumRole } from "./types/groove";
+import type {
+  DrumEvent,
+  HumanizerChange,
+  HumanizerFrameworkId,
+} from "./types/groove";
 
 const clientId = import.meta.env.VITE_AUDIOTOOL_CLIENT_ID?.trim() ?? "";
 const redirectUrl = "http://127.0.0.1:5173/";
 const lastProjectUrlKey = "groovelab:last-project-url";
 const audiotoolOauthStoragePrefix = `oidc_${clientId}_oidc_`;
-
-const ROLE_ORDER: DrumRole[] = [
-  "kick",
-  "snare",
-  "clap",
-  "closed_hat",
-  "open_hat",
-  "perc",
-  "unknown",
-];
+const allRegionsId = "__all__";
 
 export default function App() {
   const [session, setSession] = useState<AudiotoolSession | null>(null);
   const [project, setProject] = useState<AudiotoolProject | null>(null);
   const [projectUrl, setProjectUrl] = useState(() => readStoredProjectUrl());
   const [events, setEvents] = useState<DrumEvent[]>([]);
-  const [velocityRangeMidi, setVelocityRangeMidi] = useState(10);
+  const [regions, setRegions] = useState<AudiotoolRegion[]>([]);
+  const [selectedRegionId, setSelectedRegionId] = useState(allRegionsId);
+  const [tempoBpm, setTempoBpm] = useState(90);
+  const [selectedFrameworkId, setSelectedFrameworkId] =
+    useState<HumanizerFrameworkId>(defaultFramework.id);
+  const [strength, setStrength] = useState(1.4);
   const [humanizeSeed, setHumanizeSeed] = useState(1);
   const [status, setStatus] = useState("Checking Audiotool session");
   const [isBusy, setIsBusy] = useState(false);
@@ -50,16 +49,24 @@ export default function App() {
 
   const hasAudiotoolClientId = clientId.length > 0;
   const isAuthenticated = session?.status === "authenticated";
+  const selectedFramework = useMemo(
+    () =>
+      humanizerFrameworks.find((framework) => framework.id === selectedFrameworkId) ??
+      defaultFramework,
+    [selectedFrameworkId],
+  );
 
   const humanizeResult = useMemo(
     () =>
-      humanizeVelocities(events, {
-        rangeMidi: velocityRangeMidi,
+      applyHumanizerFramework(events, selectedFramework, {
+        strength,
+        tempoBpm,
         seed: `${humanizeSeed}:${patternSeed(events)}`,
       }),
-    [events, humanizeSeed, velocityRangeMidi],
+    [events, humanizeSeed, selectedFramework, strength, tempoBpm],
   );
-  const roleCounts = useMemo(() => countRoles(events), [events]);
+  const roleCounts = humanizeResult.roleSummary;
+  const previewStats = useMemo(() => summarizePreview(humanizeResult.changes), [humanizeResult]);
 
   useEffect(() => {
     let isMounted = true;
@@ -73,9 +80,31 @@ export default function App() {
 
       setIsBusy(true);
       try {
+        if (cleanStaleAudiotoolCallback()) {
+          clearAudiotoolOauthState();
+        }
+
         const nextSession = await createAudiotoolSession({ clientId, redirectUrl });
         if (!isMounted) {
           return;
+        }
+
+        if (
+          nextSession.status === "unauthenticated" &&
+          isInvalidOauthStateError(nextSession.error)
+        ) {
+          clearAudiotoolOauthState();
+          cleanAudiotoolCallbackUrl();
+          setSession({
+            ...nextSession,
+            error: undefined,
+          });
+          setStatus("Cleaned stale Audiotool login state. Try logging in again.");
+          return;
+        }
+
+        if (nextSession.status === "unauthenticated" && nextSession.error) {
+          cleanAudiotoolCallbackUrl();
         }
 
         setSession(nextSession);
@@ -124,7 +153,18 @@ export default function App() {
 
     setIsBusy(true);
     try {
+      if (cleanStaleAudiotoolCallback()) {
+        clearAudiotoolOauthState();
+      }
+
       const nextSession = await createAudiotoolSession({ clientId, redirectUrl });
+      if (nextSession.status === "unauthenticated" && isInvalidOauthStateError(nextSession.error)) {
+        clearAudiotoolOauthState();
+        cleanAudiotoolCallbackUrl();
+        setStatus("Cleaned stale Audiotool login state. Try logging in again.");
+        return;
+      }
+
       setSession(nextSession);
       if (nextSession.status === "unauthenticated") {
         nextSession.login();
@@ -157,6 +197,9 @@ export default function App() {
       const snapshot = await nextProject.readDrumPattern();
       setProject(nextProject);
       setEvents(snapshot.events);
+      setRegions(snapshot.regions);
+      setSelectedRegionId(allRegionsId);
+      setTempoBpm(snapshot.tempoBpm);
       setHumanizeSeed((seed) => seed + 1);
       storeProjectUrl(trimmedProjectUrl);
       setStatus(
@@ -179,10 +222,46 @@ export default function App() {
 
     setIsBusy(true);
     try {
-      const snapshot = await project.readDrumPattern();
+      const snapshot = await project.readDrumPattern(regionIdForRead(selectedRegionId));
       setEvents(snapshot.events);
+      setRegions(snapshot.regions);
+      if (selectedRegionId !== allRegionsId && !hasRegion(snapshot.regions, selectedRegionId)) {
+        setSelectedRegionId(allRegionsId);
+      }
+      setTempoBpm(snapshot.tempoBpm);
       setHumanizeSeed((seed) => seed + 1);
-      setStatus(`Reloaded ${snapshot.events.length} notes`);
+      setStatus(
+        `Reloaded ${snapshot.events.length} notes from ${regionStatusName(
+          snapshot.regions,
+          selectedRegionId,
+        )}`,
+      );
+    } catch (error) {
+      setStatus(errorMessage(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function selectRegion(regionId: string) {
+    if (!project) {
+      return;
+    }
+
+    setSelectedRegionId(regionId);
+    setIsBusy(true);
+    try {
+      const snapshot = await project.readDrumPattern(regionIdForRead(regionId));
+      setEvents(snapshot.events);
+      setRegions(snapshot.regions);
+      setTempoBpm(snapshot.tempoBpm);
+      setHumanizeSeed((seed) => seed + 1);
+      setStatus(
+        `Focused ${snapshot.events.length} notes in ${regionStatusName(
+          snapshot.regions,
+          regionId,
+        )}`,
+      );
     } catch (error) {
       setStatus(errorMessage(error));
     } finally {
@@ -198,11 +277,10 @@ export default function App() {
 
     setIsBusy(true);
     try {
-      const summary = await project.writeVelocities(events, humanizeResult.events);
-      setStatus(`Updated velocity on ${summary.updated} notes, skipped ${summary.skipped}`);
-      const snapshot = await project.readDrumPattern();
-      setEvents(snapshot.events);
-      setHumanizeSeed((seed) => seed + 1);
+      const summary = await project.writeTransformedPattern(events, humanizeResult.events);
+      setStatus(
+        `Wrote ${summary.updated} notes, created ${summary.created}, skipped ${summary.skipped}`,
+      );
     } catch (error) {
       setStatus(errorMessage(error));
     } finally {
@@ -214,6 +292,8 @@ export default function App() {
     void project?.close();
     setProject(null);
     setEvents([]);
+    setRegions([]);
+    setSelectedRegionId(allRegionsId);
     setStatus("Choose an Audiotool project");
   }
 
@@ -225,6 +305,8 @@ export default function App() {
     setSession(null);
     setProject(null);
     setEvents([]);
+    setRegions([]);
+    setSelectedRegionId(allRegionsId);
     setStatus("Logged out");
   }
 
@@ -234,6 +316,8 @@ export default function App() {
     setSession(null);
     setProject(null);
     setEvents([]);
+    setRegions([]);
+    setSelectedRegionId(allRegionsId);
     setHasCheckedAuth(false);
     setStatus("Reset Audiotool login state");
     window.location.assign(redirectUrl);
@@ -252,7 +336,7 @@ export default function App() {
           </span>
           <div>
             <h1>GrooveLab</h1>
-            <p>Velocity humanizer for Audiotool notes</p>
+            <p>Drum humanizer for Audiotool notes</p>
           </div>
         </div>
         <div className="status-pill" data-busy={isBusy}>
@@ -268,8 +352,7 @@ export default function App() {
             </div>
             <h2>Log in with Audiotool</h2>
             <p>
-              GrooveLab needs Audiotool access before loading projects or changing note
-              velocities.
+              GrooveLab needs Audiotool access before loading projects or changing drum notes.
             </p>
             {session?.status === "unauthenticated" && session.error && (
               <div className="notice">
@@ -363,6 +446,29 @@ export default function App() {
                   <LogOut size={17} />
                 </button>
               </div>
+              {regions.length > 0 && (
+                <>
+                  <label className="field-label" htmlFor="region-select">
+                    Drum region
+                  </label>
+                  <select
+                    id="region-select"
+                    className="select-input"
+                    value={selectedRegionId}
+                    onChange={(event) => {
+                      void selectRegion(event.target.value);
+                    }}
+                    disabled={isBusy}
+                  >
+                    <option value={allRegionsId}>All regions ({totalRegionNotes(regions)})</option>
+                    {regions.map((region) => (
+                      <option key={region.id} value={region.id}>
+                        {regionOptionLabel(region)}
+                      </option>
+                    ))}
+                  </select>
+                </>
+              )}
             </section>
 
             <section className="panel-block">
@@ -371,19 +477,34 @@ export default function App() {
                 <h2>Humanizer</h2>
               </div>
 
-              <label className="range-label" htmlFor="velocity-range">
-                <span>Velocity range</span>
-                <strong>+/-{velocityRangeMidi}</strong>
+              <div className="framework-list" role="listbox" aria-label="Humanizer framework">
+                {humanizerFrameworks.map((framework) => (
+                  <button
+                    className="framework-button"
+                    type="button"
+                    key={framework.id}
+                    data-active={framework.id === selectedFramework.id}
+                    onClick={() => setSelectedFrameworkId(framework.id)}
+                  >
+                    <span>{framework.name}</span>
+                    <small>{framework.description}</small>
+                  </button>
+                ))}
+              </div>
+
+              <label className="range-label" htmlFor="humanizer-strength">
+                <span>Strength</span>
+                <strong>{Math.round(strength * 100)}%</strong>
               </label>
               <input
-                id="velocity-range"
+                id="humanizer-strength"
                 className="range-input"
                 type="range"
                 min="0"
-                max="32"
-                step="1"
-                value={velocityRangeMidi}
-                onChange={(event) => setVelocityRangeMidi(Number(event.target.value))}
+                max="2"
+                step="0.01"
+                value={strength}
+                onChange={(event) => setStrength(Number(event.target.value))}
               />
 
               <div className="button-row">
@@ -411,11 +532,8 @@ export default function App() {
           <section className="stage">
             <div className="stage-header">
               <div>
-                <h2>Velocity Humanizer</h2>
-                <p>
-                  Randomizes each note velocity within +/-{velocityRangeMidi} MIDI units. Timing,
-                  pitch, and duration stay unchanged.
-                </p>
+                <h2>{selectedFramework.name}</h2>
+                <p>{humanizeResult.explanation}</p>
               </div>
               <button
                 className="primary-button"
@@ -424,7 +542,7 @@ export default function App() {
                 disabled={isBusy || events.length === 0}
               >
                 <Save size={17} />
-                Write Velocities
+                Write Groove
               </button>
             </div>
 
@@ -434,26 +552,40 @@ export default function App() {
                 <strong>{events.length}</strong>
               </div>
               <div className="summary-tile">
-                <span>Range</span>
-                <strong>+/-{velocityRangeMidi}</strong>
+                <span>Strength</span>
+                <strong>{Math.round(strength * 100)}%</strong>
               </div>
               <div className="summary-tile">
-                <span>Avg Delta</span>
-                <strong>{Math.round(humanizeResult.averageAbsoluteDeltaMidi)}</strong>
+                <span>Hat Grid</span>
+                <strong>{hatSubdivisionLabel(humanizeResult.hatSubdivision)}</strong>
               </div>
               <div className="summary-tile">
-                <span>Max Delta</span>
-                <strong>{humanizeResult.maxAbsoluteDeltaMidi}</strong>
+                <span>Max Move</span>
+                <strong>{previewStats.maxShiftMs} ms</strong>
               </div>
-              {ROLE_ORDER.slice(0, 3).map((role) => (
-                <div className="summary-tile" key={role}>
-                  <span>{roleLabel(role)}</span>
-                  <strong>{roleCounts[role]}</strong>
-                </div>
-              ))}
+              <div className="summary-tile">
+                <span>Velocity</span>
+                <strong>{previewStats.maxVelocityDeltaMidi}</strong>
+              </div>
+              <div className="summary-tile">
+                <span>{roleLabel("kick")}</span>
+                <strong>{roleCounts.kick}</strong>
+              </div>
+              <div className="summary-tile">
+                <span>Snares</span>
+                <strong>{roleCounts.snare + roleCounts.clap}</strong>
+              </div>
+              <div className="summary-tile">
+                <span>Hats</span>
+                <strong>{roleCounts.closed_hat + roleCounts.open_hat}</strong>
+              </div>
             </div>
 
-            <VelocityVisualizer changes={humanizeResult.changes} />
+            <GrooveVisualizer
+              originalEvents={events}
+              transformedEvents={humanizeResult.events}
+              changes={humanizeResult.changes}
+            />
 
             <div className="analysis-panel">
               <div className="analysis-copy">
@@ -461,20 +593,16 @@ export default function App() {
                 <p>{humanizeResult.explanation}</p>
               </div>
               <div className="change-list">
-                {humanizeResult.changes.slice(0, 10).map((change) => (
-                  <div className="change-row" key={change.id}>
-                    <span>{roleLabel(change.role)}</span>
-                    <strong>
-                      {change.originalVelocityMidi}
-                      {" -> "}
-                      {change.newVelocityMidi}
-                    </strong>
-                    <small>
-                      {change.deltaMidi >= 0 ? "+" : ""}
-                      {change.deltaMidi}
-                    </small>
-                  </div>
-                ))}
+                {humanizeResult.changes
+                  .filter((change) => change.shiftTicks !== 0 || change.velocityDelta !== 0)
+                  .slice(0, 12)
+                  .map((change) => (
+                    <div className="change-row" key={change.id}>
+                      <span>{roleLabel(change.role)}</span>
+                      <strong>{formatSigned(change.shiftMs)} ms</strong>
+                      <small>{formatSigned(velocityDeltaMidi(change))}</small>
+                    </div>
+                  ))}
               </div>
             </div>
           </section>
@@ -484,28 +612,59 @@ export default function App() {
   );
 }
 
-function countRoles(events: DrumEvent[]) {
-  return events.reduce(
-    (counts, event) => {
-      counts[event.role] += 1;
-      return counts;
-    },
-    {
-      kick: 0,
-      snare: 0,
-      clap: 0,
-      closed_hat: 0,
-      open_hat: 0,
-      perc: 0,
-      unknown: 0,
-    } satisfies Record<DrumRole, number>,
-  );
-}
-
 function patternSeed(events: DrumEvent[]) {
   return events
     .map((event) => `${event.id}:${event.time}:${velocityToMidi(event.velocity)}`)
     .join("|");
+}
+
+function regionIdForRead(regionId: string) {
+  return regionId === allRegionsId ? undefined : regionId;
+}
+
+function hasRegion(regions: AudiotoolRegion[], regionId: string) {
+  return regions.some((region) => region.id === regionId);
+}
+
+function regionStatusName(regions: AudiotoolRegion[], regionId: string) {
+  if (regionId === allRegionsId) {
+    return "all regions";
+  }
+  return regions.find((region) => region.id === regionId)?.name ?? "selected region";
+}
+
+function totalRegionNotes(regions: AudiotoolRegion[]) {
+  return regions.reduce((sum, region) => sum + region.noteCount, 0);
+}
+
+function regionOptionLabel(region: AudiotoolRegion) {
+  const typeLabel = region.sourceType === "pattern" ? "Pattern" : "Notes";
+  const context =
+    region.trackName && region.trackName !== region.name
+      ? ` - ${region.trackName}`
+      : region.deviceName && region.deviceName !== region.name
+        ? ` - ${region.deviceName}`
+        : "";
+  return `${region.name}${context} - ${typeLabel} (${region.noteCount})`;
+}
+
+function summarizePreview(changes: HumanizerChange[]) {
+  return {
+    maxShiftMs: Math.round(Math.max(0, ...changes.map((change) => Math.abs(change.shiftMs)))),
+    maxVelocityDeltaMidi: Math.max(
+      0,
+      ...changes.map((change) => Math.abs(velocityDeltaMidi(change))),
+    ),
+  };
+}
+
+function velocityDeltaMidi(change: HumanizerChange) {
+  return velocityToMidi(change.newVelocity) - velocityToMidi(change.originalVelocity);
+}
+
+function formatSigned(value: number) {
+  const rounded = Number.isInteger(value) ? value : Math.round(value * 10) / 10;
+  return `${rounded >= 0 ? "+" : ""}${rounded}`;
 }
 
 function readStoredProjectUrl() {
@@ -518,10 +677,58 @@ function storeProjectUrl(projectUrl: string) {
 
 function clearAudiotoolOauthState() {
   for (const key of Object.keys(window.localStorage)) {
-    if (key.startsWith(audiotoolOauthStoragePrefix)) {
+    if (key.startsWith(audiotoolOauthStoragePrefix) || isAudiotoolOauthStorageKey(key)) {
       window.localStorage.removeItem(key);
     }
   }
+}
+
+function cleanStaleAudiotoolCallback() {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get("code");
+  if (!code) {
+    return false;
+  }
+
+  const urlState = params.get("state");
+  const storedState = window.localStorage.getItem(
+    `${audiotoolOauthStoragePrefix}state`,
+  );
+  const codeVerifier = window.localStorage.getItem(
+    `${audiotoolOauthStoragePrefix}code_verifier`,
+  );
+  const isStale = !urlState || !storedState || urlState !== storedState || !codeVerifier;
+
+  if (isStale) {
+    cleanAudiotoolCallbackUrl();
+  }
+
+  return isStale;
+}
+
+function cleanAudiotoolCallbackUrl() {
+  const url = new URL(window.location.href);
+  let changed = false;
+
+  for (const param of ["code", "state", "error", "error_description"]) {
+    if (url.searchParams.has(param)) {
+      url.searchParams.delete(param);
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    const nextPath = `${url.pathname}${url.search}${url.hash}`;
+    window.history.replaceState({}, document.title, nextPath || "/");
+  }
+}
+
+function isAudiotoolOauthStorageKey(key: string) {
+  return key.startsWith("oidc_") && key.includes("_oidc_");
+}
+
+function isInvalidOauthStateError(error?: string) {
+  return error?.includes("Invalid state URL parameter") ?? false;
 }
 
 function errorMessage(error: unknown) {

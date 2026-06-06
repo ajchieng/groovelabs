@@ -1,11 +1,11 @@
-import type { DrumEvent, DrumRole, GrooveChange } from "../types/groove";
+import type { DrumEvent, DrumRole, HumanizerChange } from "../types/groove";
 import { TICKS_PER_BEAT } from "../types/groove";
-import { roleLabel } from "../engine/grooveEngine";
+import { roleLabel } from "../engine/drumFormat";
 
 type GrooveVisualizerProps = {
   originalEvents: DrumEvent[];
   transformedEvents: DrumEvent[];
-  changes: GrooveChange[];
+  changes: HumanizerChange[];
 };
 
 const ROLE_ORDER: DrumRole[] = [
