@@ -21,6 +21,8 @@ type TransformContext = {
   tempoBpm: number;
   ticksPerBeat: number;
   hatSubdivision: HatSubdivision;
+  mainEighthHatIds: Set<string>;
+  hatVelocityCeilingOffsetMidi: number;
   averageHatMidi: number;
   snareBackbeatsById: Map<string, SnareBackbeat>;
   snareTimes: number[];
@@ -51,7 +53,8 @@ export function applyHumanizerFramework(
   const snareEvents = events.filter((event) => SNARE_ROLES.has(event.role));
   const kickEvents = events.filter((event) => event.role === "kick");
   const roleSummary = summarizeRoles(events);
-  const hatSubdivision = inferHatSubdivision(hats, ticksPerBeat);
+  const eighthHatGrid = analyzeEighthHatGrid(hats, ticksPerBeat);
+  const hatSubdivision = inferHatSubdivision(hats, ticksPerBeat, eighthHatGrid);
 
   const context: TransformContext = {
     framework,
@@ -60,11 +63,14 @@ export function applyHumanizerFramework(
     tempoBpm: options.tempoBpm,
     ticksPerBeat,
     hatSubdivision,
+    mainEighthHatIds: eighthHatGrid?.mainIds ?? new Set<string>(),
+    hatVelocityCeilingOffsetMidi: 0,
     averageHatMidi: averageMidi(hats),
     snareBackbeatsById: mapSnareBackbeats(snareEvents, ticksPerBeat),
     snareTimes: snareEvents.map((event) => event.time),
     kickVelocityDeltasById: mapKickVelocityDeltas(kickEvents, ticksPerBeat, framework),
   };
+  context.hatVelocityCeilingOffsetMidi = calculateHatVelocityCeilingOffset(hats, context);
 
   const transformed = events.map((event) => transformEvent(event, context));
   const changes = transformed.map((event, index) =>
@@ -105,12 +111,16 @@ function transformHat(event: DrumEvent, context: TransformContext): DrumEvent {
     hatBaseDragMs(context) +
     hatSwingOffsetMs(event, context) +
     params.hatTimingJitterMs * seededSigned(`${eventSeed}:hat-time`);
-  const subdivisionDelta = hatVelocityDelta(event, context);
-  const snareLift = hasNearbySnare(event, context)
-    ? params.hatSnareLiftMidi
-    : 0;
-  const targetMidi = context.averageHatMidi + subdivisionDelta + snareLift;
-  const nextVelocity = shapeVelocity(event, targetMidi, params.hatVelocityJitterMidi, context);
+  const targetMidi = hatVelocityTargetMidi(event, context);
+  const nextVelocity =
+    targetMidi === null
+      ? event.velocity
+      : shapeHatVelocity(
+          event,
+          targetMidi,
+          params.hatVelocityJitterMidi,
+          context,
+        );
 
   return {
     ...event,
@@ -121,7 +131,9 @@ function transformHat(event: DrumEvent, context: TransformContext): DrumEvent {
 
 function hatBaseDragMs(context: TransformContext) {
   const params = context.framework.parameters;
-  return context.hatSubdivision === "sixteenth" ? params.hatSixteenthDragMs : params.hatDragMs;
+  return context.hatSubdivision === "sixteenth"
+    ? params.hatSixteenthDragMs
+    : params.hatEighthDragMs;
 }
 
 function transformSnare(event: DrumEvent, context: TransformContext): DrumEvent {
@@ -170,9 +182,14 @@ function hatVelocityDelta(event: DrumEvent, context: TransformContext) {
   const sixteenthInBeat = positiveModulo(sixteenthIndex, 4);
 
   if (context.hatSubdivision === "eighth") {
-    return sixteenthInBeat === 2
-      ? params.hatEighthOffbeatDipMidi
-      : params.hatEighthDownbeatLiftMidi;
+    if (!context.mainEighthHatIds.has(event.id)) {
+      return null;
+    }
+
+    const barIndex = Math.floor(event.time / (context.ticksPerBeat * BEATS_PER_BAR));
+    const barInPhrase = positiveModulo(barIndex, params.hatEighthAccentsMidi.length);
+    const eighthInBeat = sixteenthInBeat === 2 ? 1 : 0;
+    return params.hatEighthAccentsMidi[barInPhrase] + params.hatEighthStepAccentsMidi[eighthInBeat];
   }
 
   if (context.hatSubdivision === "sixteenth") {
@@ -180,10 +197,21 @@ function hatVelocityDelta(event: DrumEvent, context: TransformContext) {
   }
 
   if (context.hatSubdivision === "quarter") {
-    return params.hatEighthDownbeatLiftMidi * 0.5;
+    return params.hatEighthAccentsMidi[0] * 0.5;
   }
 
   return params.hatSixteenthAccentsMidi[sixteenthInBeat] * 0.65;
+}
+
+function hatVelocityTargetMidi(event: DrumEvent, context: TransformContext) {
+  const params = context.framework.parameters;
+  const subdivisionDelta = hatVelocityDelta(event, context);
+  if (subdivisionDelta === null) {
+    return null;
+  }
+
+  const snareLift = hasNearbySnare(event, context) ? params.hatSnareLiftMidi : 0;
+  return context.averageHatMidi + subdivisionDelta + snareLift;
 }
 
 function hatSwingOffsetMs(event: DrumEvent, context: TransformContext) {
@@ -193,7 +221,7 @@ function hatSwingOffsetMs(event: DrumEvent, context: TransformContext) {
   const isOffSixteenth = sixteenthInBeat === 1 || sixteenthInBeat === 3;
 
   if (context.hatSubdivision === "eighth") {
-    return sixteenthInBeat === 2 ? params.hatOffbeatDragMs : 0;
+    return sixteenthInBeat === 2 ? params.hatEighthOffbeatDragMs : 0;
   }
 
   if (context.hatSubdivision === "sixteenth") {
@@ -217,11 +245,59 @@ function shapeVelocity(
     return event.velocity;
   }
 
+  return midiToVelocity(
+    clamp(Math.round(rawShapedMidi(event, targetMidi, jitterMidi, context)), 1, 127),
+  );
+}
+
+function shapeHatVelocity(
+  event: DrumEvent,
+  targetMidi: number,
+  jitterMidi: number,
+  context: TransformContext,
+) {
+  if (context.strength === 0) {
+    return event.velocity;
+  }
+
+  const shapedMidi =
+    rawShapedMidi(event, targetMidi, jitterMidi, context) - context.hatVelocityCeilingOffsetMidi;
+  return midiToVelocity(clamp(Math.round(shapedMidi), 1, 127));
+}
+
+function rawShapedMidi(
+  event: DrumEvent,
+  targetMidi: number,
+  jitterMidi: number,
+  context: TransformContext,
+) {
   const originalMidi = velocityToMidi(event.velocity);
   const eventSeed = `${context.seed}:${event.id}`;
   const jitter = jitterMidi * seededSigned(`${eventSeed}:velocity`) * context.strength;
-  const shapedMidi = originalMidi + (targetMidi - originalMidi) * context.strength + jitter;
-  return midiToVelocity(clamp(Math.round(shapedMidi), 1, 127));
+  return originalMidi + (targetMidi - originalMidi) * context.strength + jitter;
+}
+
+function calculateHatVelocityCeilingOffset(hats: DrumEvent[], context: TransformContext) {
+  if (context.strength === 0 || hats.length === 0) {
+    return 0;
+  }
+
+  const params = context.framework.parameters;
+  const shapedHatMidis = hats
+    .map((event) => {
+      const targetMidi = hatVelocityTargetMidi(event, context);
+      if (targetMidi === null) {
+        return null;
+      }
+      return rawShapedMidi(event, targetMidi, params.hatVelocityJitterMidi, context);
+    })
+    .filter((midi): midi is number => midi !== null);
+
+  if (shapedHatMidis.length === 0) {
+    return 0;
+  }
+
+  return Math.max(0, Math.max(...shapedHatMidis) - 127);
 }
 
 function shiftTime(time: number, shiftMs: number, context: TransformContext) {
@@ -231,13 +307,25 @@ function shiftTime(time: number, shiftMs: number, context: TransformContext) {
   return Math.max(0, time + shiftTicks);
 }
 
-function inferHatSubdivision(hats: DrumEvent[], ticksPerBeat: number): HatSubdivision {
+type EighthHatGrid = {
+  mainIds: Set<string>;
+};
+
+function inferHatSubdivision(
+  hats: DrumEvent[],
+  ticksPerBeat: number,
+  eighthHatGrid: EighthHatGrid | null,
+): HatSubdivision {
   if (hats.length === 0) {
     return "none";
   }
 
   if (hats.length === 1) {
     return "quarter";
+  }
+
+  if (eighthHatGrid) {
+    return "eighth";
   }
 
   const sixteenth = ticksPerBeat / 4;
@@ -265,6 +353,57 @@ function inferHatSubdivision(hats: DrumEvent[], ticksPerBeat: number): HatSubdiv
     return "quarter";
   }
   return "mixed";
+}
+
+function analyzeEighthHatGrid(hats: DrumEvent[], ticksPerBeat: number): EighthHatGrid | null {
+  if (hats.length < 2) {
+    return null;
+  }
+
+  const sixteenth = ticksPerBeat / 4;
+  const byParity = new Map<number, Array<{ event: DrumEvent; slot: number }>>([
+    [0, []],
+    [1, []],
+  ]);
+
+  for (const event of hats) {
+    const slot = Math.round(event.time / sixteenth);
+    const parity = positiveModulo(slot, 2);
+    byParity.get(parity)?.push({ event, slot });
+  }
+
+  const even = byParity.get(0) ?? [];
+  const odd = byParity.get(1) ?? [];
+  const dominant = even.length >= odd.length ? even : odd;
+  const embellishments = dominant === even ? odd : even;
+
+  if (dominant.length < 3 || dominant.length < embellishments.length * 2) {
+    return null;
+  }
+
+  const dominantSlots = [...new Set(dominant.map((entry) => entry.slot))].sort((a, b) => a - b);
+  const medianStep = medianSlotDiff(dominantSlots);
+  if (medianStep === null || medianStep > 2) {
+    return null;
+  }
+
+  return {
+    mainIds: new Set(dominant.map((entry) => entry.event.id)),
+  };
+}
+
+function medianSlotDiff(slots: number[]) {
+  const diffs = slots
+    .slice(1)
+    .map((slot, index) => slot - slots[index])
+    .filter((diff) => diff > 0 && diff <= 8)
+    .sort((a, b) => a - b);
+
+  if (diffs.length === 0) {
+    return null;
+  }
+
+  return diffs[Math.floor(diffs.length / 2)];
 }
 
 function hasNearbySnare(event: DrumEvent, context: TransformContext) {

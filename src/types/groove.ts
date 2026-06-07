@@ -43,14 +43,14 @@ export type HatSubdivision = "quarter" | "eighth" | "sixteenth" | "mixed" | "non
 export type HumanizerFrameworkId = "push-pull";
 
 export type HumanizerFrameworkParameters = {
-  hatDragMs: number;
-  hatOffbeatDragMs: number;
+  hatEighthDragMs: number;
+  hatEighthOffbeatDragMs: number;
   hatSixteenthDragMs: number;
   hatSixteenthOffbeatDragMs: number;
   hatTimingJitterMs: number;
   hatVelocityJitterMidi: number;
-  hatEighthDownbeatLiftMidi: number;
-  hatEighthOffbeatDipMidi: number;
+  hatEighthAccentsMidi: readonly [number, number, number, number];
+  hatEighthStepAccentsMidi: readonly [number, number];
   hatSixteenthAccentsMidi: readonly [number, number, number, number];
   hatSnareLiftMidi: number;
   snarePushMs: number;

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { defaultFramework } from "../data/humanizerFrameworks";
-import { TICKS_PER_BEAT, type DrumEvent, type HumanizerFramework } from "../types/groove";
+import {
+  TICKS_PER_BAR,
+  TICKS_PER_BEAT,
+  type DrumEvent,
+  type HumanizerFramework,
+} from "../types/groove";
 import { velocityToMidi } from "./drumFormat";
 import { applyHumanizerFramework } from "./humanizerEngine";
 import { createDemoPattern } from "./samplePattern";
@@ -49,7 +54,7 @@ describe("applyHumanizerFramework", () => {
     expect(snareChange?.shiftMs).toBeLessThan(-4);
   });
 
-  it("lifts eighth-note hat offbeats and hats that land with snares", () => {
+  it("uses eighth-note step accents inside the bar and lifts hats that land with snares", () => {
     const result = applyHumanizerFramework(createEighthHatPattern(), testFramework, {
       strength: 1,
       tempoBpm: 90,
@@ -64,6 +69,86 @@ describe("applyHumanizerFramework", () => {
 
     expect(offbeatHat).toBeLessThan(beatOneHat);
     expect(snareHat).toBeGreaterThan(beatOneHat);
+  });
+
+  it("uses a four-bar phrase array for main eighth hats and ignores embellishment hats", () => {
+    const result = applyHumanizerFramework(
+      createFourBarEighthHatPatternWithEmbellishments(),
+      {
+        ...testFramework,
+        parameters: {
+          ...testFramework.parameters,
+          hatEighthAccentsMidi: [20, -10, 12, -4],
+          hatEighthStepAccentsMidi: [0, 0],
+          hatSnareLiftMidi: 0,
+        },
+      },
+      {
+        strength: 1,
+        tempoBpm: 90,
+        seed: "test",
+      },
+    );
+
+    expect(result.hatSubdivision).toBe("eighth");
+
+    const phrase = [0, 1, 2, 3].map((bar) =>
+      midiForOriginalTime(result.events, bar * TICKS_PER_BAR, "closed_hat"),
+    );
+
+    expect(phrase).toEqual([84, 54, 76, 60]);
+    expect(midiForId(result.events, "hat-embellishment-1")).toBe(64);
+  });
+
+  it("applies an audible downbeat/offbeat layer to eighth-note hats", () => {
+    const result = applyHumanizerFramework(
+      createEighthHatPattern(),
+      {
+        ...testFramework,
+        parameters: {
+          ...testFramework.parameters,
+          hatEighthAccentsMidi: [0, 0, 0, 0],
+          hatEighthStepAccentsMidi: [14, -14],
+          hatSnareLiftMidi: 0,
+        },
+      },
+      {
+        strength: 1,
+        tempoBpm: 90,
+        seed: "test",
+      },
+    );
+
+    expect(result.hatSubdivision).toBe("eighth");
+    expect(midiForOriginalTime(result.events, 0, "closed_hat")).toBe(93);
+    expect(midiForOriginalTime(result.events, TICKS_PER_BEAT / 2, "closed_hat")).toBe(65);
+  });
+
+  it("preserves the hat accent shape when loud hats would otherwise clip", () => {
+    const result = applyHumanizerFramework(
+      createFourBarEighthHatPatternWithEmbellishments(0.95),
+      {
+        ...testFramework,
+        parameters: {
+          ...testFramework.parameters,
+          hatEighthAccentsMidi: [20, -10, 12, -4],
+          hatEighthStepAccentsMidi: [0, 0],
+          hatSnareLiftMidi: 0,
+        },
+      },
+      {
+        strength: 1,
+        tempoBpm: 90,
+        seed: "test",
+      },
+    );
+
+    const phrase = [0, 1, 2, 3].map((bar) =>
+      midiForOriginalTime(result.events, bar * TICKS_PER_BAR, "closed_hat"),
+    );
+
+    expect(Math.max(...phrase)).toBe(127);
+    expect(phrase).toEqual([127, 97, 119, 103]);
   });
 
   it("adds extra timing swing to eighth-note hat offbeats", () => {
@@ -235,6 +320,14 @@ function midiForOriginalTime(events: DrumEvent[], originalTime: number, role: Dr
   return velocityToMidi(event.velocity);
 }
 
+function midiForId(events: DrumEvent[], id: string) {
+  const event = events.find((candidate) => candidate.id === id);
+  if (!event) {
+    throw new Error(`No event with id ${id}`);
+  }
+  return velocityToMidi(event.velocity);
+}
+
 function changeForOriginalTime(
   changes: Array<{
     originalTime: number;
@@ -277,6 +370,34 @@ function createEighthHatPattern(): DrumEvent[] {
       time,
       pitch: 38,
       velocity: 0.72,
+      role: "unknown",
+      confidence: 0,
+    });
+  }
+
+  return events;
+}
+
+function createFourBarEighthHatPatternWithEmbellishments(velocity = 0.5): DrumEvent[] {
+  const events: DrumEvent[] = [];
+
+  for (let bar = 0; bar < 4; bar += 1) {
+    for (let step = 0; step < 8; step += 1) {
+      events.push({
+        id: `hat-${bar}-${step}`,
+        time: bar * TICKS_PER_BAR + step * (TICKS_PER_BEAT / 2),
+        pitch: 42,
+        velocity,
+        role: "unknown",
+        confidence: 0,
+      });
+    }
+
+    events.push({
+      id: `hat-embellishment-${bar}`,
+      time: bar * TICKS_PER_BAR + TICKS_PER_BEAT / 4,
+      pitch: 42,
+      velocity,
       role: "unknown",
       confidence: 0,
     });

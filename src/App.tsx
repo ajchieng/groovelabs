@@ -321,7 +321,7 @@ export default function App() {
         setHumanizeSeed((seed) => seed + 1);
       }
       setStatus(
-        `Reset ${summary.updated} notes. Hats to ${hatSubdivisionLabel(humanizeResult.hatSubdivision)}, kicks/snares to 8ths, velocity ${RESET_VELOCITY_MIDI}, skipped ${summary.skipped}`,
+        `Reset ${summary.updated} notes. Hats to ${hatSubdivisionLabel(humanizeResult.hatSubdivision)}, kicks/snares to 16ths, velocity ${RESET_VELOCITY_MIDI}, skipped ${summary.skipped}`,
       );
     } catch (error) {
       setStatus(errorMessage(error));

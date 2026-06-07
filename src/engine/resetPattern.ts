@@ -40,7 +40,7 @@ function resetGridTicksForRole(role: DrumRole, hatGridTicks: number, ticksPerBea
   }
 
   if (role === "kick" || role === "snare" || role === "clap") {
-    return ticksPerBeat / 2;
+    return ticksPerBeat / 4;
   }
 
   return hatGridTicks;

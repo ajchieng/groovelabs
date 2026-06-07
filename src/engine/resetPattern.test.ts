@@ -7,7 +7,11 @@ describe("resetPatternToSixteenths", () => {
     const original = createLoosePattern();
     const reset = resetPatternToSixteenths(original);
 
-    expect(reset.map((event) => event.time)).toEqual([0, TICKS_PER_BEAT / 4, TICKS_PER_BEAT / 2]);
+    expect(reset.map((event) => event.time)).toEqual([
+      0,
+      TICKS_PER_BEAT / 4,
+      (TICKS_PER_BEAT * 3) / 4,
+    ]);
     expect(reset.map((event) => event.velocity)).toEqual([
       RESET_VELOCITY,
       RESET_VELOCITY,
@@ -26,20 +30,20 @@ describe("resetPatternToSixteenths", () => {
 });
 
 describe("resetPatternToGrooveGrid", () => {
-  it("quantizes eighth-note hat grooves to eighth hats and keeps kicks and snares on eighths", () => {
+  it("quantizes eighth-note hat grooves to eighth hats and kicks and snares to sixteenths", () => {
     const reset = resetPatternToGrooveGrid(createLoosePattern(), { hatSubdivision: "eighth" });
 
     expect(timeFor(reset, "hat")).toBe(TICKS_PER_BEAT / 2);
     expect(timeFor(reset, "kick")).toBe(0);
-    expect(timeFor(reset, "snare")).toBe(TICKS_PER_BEAT / 2);
+    expect(timeFor(reset, "snare")).toBe((TICKS_PER_BEAT * 3) / 4);
   });
 
-  it("quantizes sixteenth-note hat grooves to sixteenth hats while kicks and snares stay on eighths", () => {
+  it("quantizes sixteenth-note hat grooves to sixteenth hats and kicks and snares to sixteenths", () => {
     const reset = resetPatternToGrooveGrid(createLoosePattern(), { hatSubdivision: "sixteenth" });
 
     expect(timeFor(reset, "hat")).toBe(TICKS_PER_BEAT / 4);
     expect(timeFor(reset, "kick")).toBe(0);
-    expect(timeFor(reset, "snare")).toBe(TICKS_PER_BEAT / 2);
+    expect(timeFor(reset, "snare")).toBe((TICKS_PER_BEAT * 3) / 4);
   });
 });
 
@@ -63,7 +67,7 @@ function createLoosePattern(): DrumEvent[] {
     },
     {
       id: "snare",
-      time: TICKS_PER_BEAT / 2 - 150,
+      time: (TICKS_PER_BEAT * 3) / 4 - 180,
       pitch: 38,
       velocity: 0.76,
       role: "snare",
