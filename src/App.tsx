@@ -8,11 +8,17 @@ import {
   RotateCcw,
   Save,
   SlidersHorizontal,
+  Undo2,
 } from "lucide-react";
 import { GrooveVisualizer } from "./components/GrooveVisualizer";
 import { defaultFramework, humanizerFrameworks } from "./data/humanizerFrameworks";
 import { hatSubdivisionLabel, roleLabel, velocityToMidi } from "./engine/drumFormat";
 import { applyHumanizerFramework } from "./engine/humanizerEngine";
+import {
+  RESET_VELOCITY,
+  RESET_VELOCITY_MIDI,
+  resetPatternToGrooveGrid,
+} from "./engine/resetPattern";
 import {
   AudiotoolProject,
   type AudiotoolRegion,
@@ -78,12 +84,9 @@ export default function App() {
         return;
       }
 
+      cleanStaleAudiotoolLoginStateOnBoot();
       setIsBusy(true);
       try {
-        if (cleanStaleAudiotoolCallback()) {
-          clearAudiotoolOauthState();
-        }
-
         const nextSession = await createAudiotoolSession({ clientId, redirectUrl });
         if (!isMounted) {
           return;
@@ -136,7 +139,7 @@ export default function App() {
 
   useEffect(() => {
     return () => {
-      void project?.close();
+      void closeProject(project);
     };
   }, [project]);
 
@@ -151,12 +154,9 @@ export default function App() {
       return;
     }
 
+    cleanStaleAudiotoolLoginStateOnBoot();
     setIsBusy(true);
     try {
-      if (cleanStaleAudiotoolCallback()) {
-        clearAudiotoolOauthState();
-      }
-
       const nextSession = await createAudiotoolSession({ clientId, redirectUrl });
       if (nextSession.status === "unauthenticated" && isInvalidOauthStateError(nextSession.error)) {
         clearAudiotoolOauthState();
@@ -192,7 +192,7 @@ export default function App() {
 
     setIsBusy(true);
     try {
-      await project?.close();
+      await closeProject(project);
       const nextProject = await session.openProject(trimmedProjectUrl);
       const snapshot = await nextProject.readDrumPattern();
       setProject(nextProject);
@@ -222,7 +222,9 @@ export default function App() {
 
     setIsBusy(true);
     try {
-      const snapshot = await project.readDrumPattern(regionIdForRead(selectedRegionId));
+      const snapshot = await runProjectOperation((activeProject) =>
+        activeProject.readDrumPattern(regionIdForRead(selectedRegionId)),
+      );
       setEvents(snapshot.events);
       setRegions(snapshot.regions);
       if (selectedRegionId !== allRegionsId && !hasRegion(snapshot.regions, selectedRegionId)) {
@@ -251,7 +253,9 @@ export default function App() {
     setSelectedRegionId(regionId);
     setIsBusy(true);
     try {
-      const snapshot = await project.readDrumPattern(regionIdForRead(regionId));
+      const snapshot = await runProjectOperation((activeProject) =>
+        activeProject.readDrumPattern(regionIdForRead(regionId)),
+      );
       setEvents(snapshot.events);
       setRegions(snapshot.regions);
       setTempoBpm(snapshot.tempoBpm);
@@ -277,7 +281,9 @@ export default function App() {
 
     setIsBusy(true);
     try {
-      const summary = await project.writeTransformedPattern(events, humanizeResult.events);
+      const summary = await runProjectOperation((activeProject) =>
+        activeProject.writeTransformedPattern(events, humanizeResult.events),
+      );
       setStatus(
         `Wrote ${summary.updated} notes, created ${summary.created}, skipped ${summary.skipped}`,
       );
@@ -288,8 +294,44 @@ export default function App() {
     }
   }
 
+  async function resetPattern() {
+    if (!project) {
+      setStatus("Open a project before resetting");
+      return;
+    }
+
+    if (events.length === 0) {
+      setStatus("No notes loaded to reset");
+      return;
+    }
+
+    const resetEvents = resetPatternToGrooveGrid(events, {
+      hatSubdivision: humanizeResult.hatSubdivision,
+    });
+    setIsBusy(true);
+    try {
+      const summary = await runProjectOperation((activeProject) =>
+        activeProject.writeTransformedPattern(events, resetEvents, {
+          forcePatternSixteenthGrid: true,
+          patternVelocity: RESET_VELOCITY,
+        }),
+      );
+      if (summary.updated > 0 || summary.created > 0) {
+        setEvents(resetEvents);
+        setHumanizeSeed((seed) => seed + 1);
+      }
+      setStatus(
+        `Reset ${summary.updated} notes. Hats to ${hatSubdivisionLabel(humanizeResult.hatSubdivision)}, kicks/snares to 8ths, velocity ${RESET_VELOCITY_MIDI}, skipped ${summary.skipped}`,
+      );
+    } catch (error) {
+      setStatus(errorMessage(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   function chooseDifferentProject() {
-    void project?.close();
+    void closeProject(project);
     setProject(null);
     setEvents([]);
     setRegions([]);
@@ -301,7 +343,7 @@ export default function App() {
     if (session?.status === "authenticated") {
       session.logout();
     }
-    void project?.close();
+    void closeProject(project);
     setSession(null);
     setProject(null);
     setEvents([]);
@@ -321,6 +363,40 @@ export default function App() {
     setHasCheckedAuth(false);
     setStatus("Reset Audiotool login state");
     window.location.assign(redirectUrl);
+  }
+
+  async function runProjectOperation<T>(
+    operation: (activeProject: AudiotoolProject) => Promise<T>,
+  ) {
+    const activeProject = project ?? (await reopenProjectDocument());
+
+    try {
+      return await operation(activeProject);
+    } catch (error) {
+      if (!isDocumentStoppedError(error)) {
+        throw error;
+      }
+
+      const reopenedProject = await reopenProjectDocument();
+      return operation(reopenedProject);
+    }
+  }
+
+  async function reopenProjectDocument() {
+    if (session?.status !== "authenticated") {
+      throw new Error("Log in with Audiotool first");
+    }
+
+    const trimmedProjectUrl = projectUrl.trim();
+    if (!trimmedProjectUrl) {
+      throw new Error("Paste an Audiotool project URL");
+    }
+
+    await closeProject(project);
+    const nextProject = await session.openProject(trimmedProjectUrl);
+    setProject(nextProject);
+    setStatus("Reconnected to Audiotool project");
+    return nextProject;
   }
 
   const shouldShowLoginGate =
@@ -501,7 +577,7 @@ export default function App() {
                 className="range-input"
                 type="range"
                 min="0"
-                max="2"
+                max="4"
                 step="0.01"
                 value={strength}
                 onChange={(event) => setStrength(Number(event.target.value))}
@@ -517,13 +593,14 @@ export default function App() {
                   Reroll
                 </button>
                 <button
-                  className="primary-button"
+                  className="secondary-button"
                   type="button"
-                  onClick={writeBack}
+                  onClick={resetPattern}
                   disabled={isBusy || events.length === 0}
+                  title="Quantize to 16ths and reset velocity"
                 >
-                  <Save size={17} />
-                  Write
+                  <Undo2 size={17} />
+                  Reset
                 </button>
               </div>
             </section>
@@ -683,34 +760,34 @@ function clearAudiotoolOauthState() {
   }
 }
 
-function cleanStaleAudiotoolCallback() {
+function cleanStaleAudiotoolLoginStateOnBoot() {
   const params = new URLSearchParams(window.location.search);
-  const code = params.get("code");
-  if (!code) {
-    return false;
+  const hasActiveCallback =
+    params.has("code") ||
+    params.has("state") ||
+    params.has("error") ||
+    params.has("error_description");
+
+  if (hasActiveCallback) {
+    return;
   }
 
-  const urlState = params.get("state");
-  const storedState = window.localStorage.getItem(
-    `${audiotoolOauthStoragePrefix}state`,
-  );
-  const codeVerifier = window.localStorage.getItem(
-    `${audiotoolOauthStoragePrefix}code_verifier`,
-  );
-  const isStale = !urlState || !storedState || urlState !== storedState || !codeVerifier;
+  for (const key of Object.keys(window.localStorage)) {
+    if (isAudiotoolPendingOauthKey(key)) {
+      window.localStorage.removeItem(key);
+    }
+  }
 
-  if (isStale) {
+  if (params.has("scope")) {
     cleanAudiotoolCallbackUrl();
   }
-
-  return isStale;
 }
 
 function cleanAudiotoolCallbackUrl() {
   const url = new URL(window.location.href);
   let changed = false;
 
-  for (const param of ["code", "state", "error", "error_description"]) {
+  for (const param of ["code", "scope", "state", "error", "error_description"]) {
     if (url.searchParams.has(param)) {
       url.searchParams.delete(param);
       changed = true;
@@ -727,8 +804,30 @@ function isAudiotoolOauthStorageKey(key: string) {
   return key.startsWith("oidc_") && key.includes("_oidc_");
 }
 
+function isAudiotoolPendingOauthKey(key: string) {
+  return (
+    key === `${audiotoolOauthStoragePrefix}state` ||
+    key === `${audiotoolOauthStoragePrefix}code_verifier` ||
+    (key.startsWith("oidc_") && (key.endsWith("_oidc_state") || key.endsWith("_oidc_code_verifier")))
+  );
+}
+
 function isInvalidOauthStateError(error?: string) {
   return error?.includes("Invalid state URL parameter") ?? false;
+}
+
+function isDocumentStoppedError(error: unknown) {
+  return errorMessage(error).includes("Document stopped");
+}
+
+async function closeProject(project: AudiotoolProject | null) {
+  try {
+    await project?.close();
+  } catch (error) {
+    if (!isDocumentStoppedError(error)) {
+      throw error;
+    }
+  }
 }
 
 function errorMessage(error: unknown) {

@@ -45,6 +45,8 @@ export type HumanizerFrameworkId = "push-pull";
 export type HumanizerFrameworkParameters = {
   hatDragMs: number;
   hatOffbeatDragMs: number;
+  hatSixteenthDragMs: number;
+  hatSixteenthOffbeatDragMs: number;
   hatTimingJitterMs: number;
   hatVelocityJitterMidi: number;
   hatEighthDownbeatLiftMidi: number;
@@ -55,6 +57,7 @@ export type HumanizerFrameworkParameters = {
   snareTimingJitterMs: number;
   snareVelocityJitterMidi: number;
   snareBeatFourLiftMidi: number;
+  kickTimingJitterMs: number;
   kickVelocityJitterMidi: number;
   kickDoubleDownbeatLiftMidi: number;
   kickDoubleOffbeatFirstLiftMidi: number;

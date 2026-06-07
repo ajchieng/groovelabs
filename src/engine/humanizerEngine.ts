@@ -35,6 +35,7 @@ type SnareBackbeat = {
 
 const HAT_ROLES = new Set<DrumRole>(["closed_hat", "open_hat"]);
 const SNARE_ROLES = new Set<DrumRole>(["snare", "clap"]);
+const TIMING_REFERENCE_BPM = 90;
 
 export function applyHumanizerFramework(
   inputEvents: DrumEvent[],
@@ -42,7 +43,7 @@ export function applyHumanizerFramework(
   options: HumanizerEngineOptions,
 ): HumanizerResult {
   const ticksPerBeat = options.ticksPerBeat ?? TICKS_PER_BEAT;
-  const strength = clamp(options.strength, 0, 2);
+  const strength = clamp(options.strength, 0, 4);
   const seed = options.seed ?? framework.id;
   const detectedEvents = detectDrumRoles(inputEvents, { ticksPerBeat });
   const events = [...detectedEvents].sort((a, b) => a.time - b.time || a.id.localeCompare(b.id));
@@ -101,7 +102,7 @@ function transformHat(event: DrumEvent, context: TransformContext): DrumEvent {
   const params = context.framework.parameters;
   const eventSeed = `${context.seed}:${event.id}`;
   const shiftMs =
-    params.hatDragMs +
+    hatBaseDragMs(context) +
     hatSwingOffsetMs(event, context) +
     params.hatTimingJitterMs * seededSigned(`${eventSeed}:hat-time`);
   const subdivisionDelta = hatVelocityDelta(event, context);
@@ -116,6 +117,11 @@ function transformHat(event: DrumEvent, context: TransformContext): DrumEvent {
     time: shiftTime(event.time, shiftMs, context),
     velocity: nextVelocity,
   };
+}
+
+function hatBaseDragMs(context: TransformContext) {
+  const params = context.framework.parameters;
+  return context.hatSubdivision === "sixteenth" ? params.hatSixteenthDragMs : params.hatDragMs;
 }
 
 function transformSnare(event: DrumEvent, context: TransformContext): DrumEvent {
@@ -146,11 +152,14 @@ function transformSnare(event: DrumEvent, context: TransformContext): DrumEvent 
 
 function transformKick(event: DrumEvent, context: TransformContext): DrumEvent {
   const params = context.framework.parameters;
+  const eventSeed = `${context.seed}:${event.id}`;
+  const shiftMs = params.kickTimingJitterMs * seededSigned(`${eventSeed}:kick-time`);
   const targetMidi =
     velocityToMidi(event.velocity) + (context.kickVelocityDeltasById.get(event.id) ?? 0);
 
   return {
     ...event,
+    time: shiftTime(event.time, shiftMs, context),
     velocity: shapeVelocity(event, targetMidi, params.kickVelocityJitterMidi, context),
   };
 }
@@ -162,7 +171,7 @@ function hatVelocityDelta(event: DrumEvent, context: TransformContext) {
 
   if (context.hatSubdivision === "eighth") {
     return sixteenthInBeat === 2
-      ? -params.hatEighthOffbeatDipMidi
+      ? params.hatEighthOffbeatDipMidi
       : params.hatEighthDownbeatLiftMidi;
   }
 
@@ -188,11 +197,11 @@ function hatSwingOffsetMs(event: DrumEvent, context: TransformContext) {
   }
 
   if (context.hatSubdivision === "sixteenth") {
-    return isOffSixteenth ? params.hatOffbeatDragMs : 0;
+    return isOffSixteenth ? params.hatSixteenthOffbeatDragMs : 0;
   }
 
   if (context.hatSubdivision === "mixed") {
-    return isOffSixteenth ? params.hatOffbeatDragMs * 0.75 : 0;
+    return isOffSixteenth ? params.hatSixteenthOffbeatDragMs * 0.75 : 0;
   }
 
   return 0;
@@ -217,7 +226,7 @@ function shapeVelocity(
 
 function shiftTime(time: number, shiftMs: number, context: TransformContext) {
   const shiftTicks = Math.round(
-    msToTicks(shiftMs * context.strength, context.tempoBpm, context.ticksPerBeat),
+    msToTicks(shiftMs * context.strength, TIMING_REFERENCE_BPM, context.ticksPerBeat),
   );
   return Math.max(0, time + shiftTicks);
 }
@@ -421,7 +430,7 @@ function explainChanges(
     `Detected ${roleText}.`,
     hats.length > 0 ? `Hats read as ${hatSubdivision} notes and drag about ${round(avgHatDrag, 1)} ms.` : "",
     snares.length > 0 ? `Snares push about ${round(Math.abs(avgSnarePush), 1)} ms forward.` : "",
-    kicks.length > 0 ? `Kick velocities are shaped by close-hit accents and small jitter.` : "",
+    kicks.length > 0 ? `Kick velocities and positions get small close-hit accents and jitter.` : "",
     `Largest velocity move is ${maxVelocityMove} MIDI units.`,
   ]
     .filter(Boolean)

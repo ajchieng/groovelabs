@@ -1,5 +1,5 @@
 import { audiotool } from "@audiotool/nexus";
-import type { DrumEvent, DrumRole } from "../types/groove";
+import { TICKS_PER_BEAT, type DrumEvent, type DrumRole } from "../types/groove";
 import { detectDrumRoles } from "../engine/roleDetection";
 import { clamp } from "../engine/math";
 
@@ -77,6 +77,11 @@ export type AudiotoolWriteSummary = {
   updated: number;
   created: number;
   skipped: number;
+};
+
+type AudiotoolWriteOptions = {
+  forcePatternSixteenthGrid?: boolean;
+  patternVelocity?: number;
 };
 
 export type AudiotoolSession =
@@ -219,18 +224,28 @@ export class AudiotoolProject {
   async writeTransformedPattern(
     originalEvents: DrumEvent[],
     transformedEvents: DrumEvent[],
+    options: AudiotoolWriteOptions = {},
   ): Promise<AudiotoolWriteSummary> {
     const originalsById = new Map(originalEvents.map((event) => [event.id, event]));
     const transformedBySourceId = transformedEvents
       .filter((event) => event.source?.kind === "audiotool-note" && originalsById.has(event.id))
       .map((event) => [event.id, event] as const);
+    const transformedPatternEvents = transformedEvents.filter(
+      (event) => event.source?.kind === "audiotool-pattern-step" && originalsById.has(event.id),
+    );
     const ghostEvents = transformedEvents.filter(
       (event) => event.source?.kind === "audiotool-note" && !originalsById.has(event.id),
+    );
+    const unsupportedEvents = transformedEvents.filter(
+      (event) =>
+        event.source?.kind !== "audiotool-note" &&
+        event.source?.kind !== "audiotool-pattern-step" &&
+        originalsById.has(event.id),
     );
 
     let updated = 0;
     let created = 0;
-    let skipped = 0;
+    let skipped = unsupportedEvents.length;
 
     await this.nexus.modify((transaction) => {
       const currentNotes = new Map(
@@ -238,6 +253,12 @@ export class AudiotoolProject {
           .ofTypes("note")
           .get()
           .map((note) => [note.id, note]),
+      );
+      const currentPatterns = new Map(
+        transaction.entities
+          .ofTypes("beatbox8Pattern", "beatbox9Pattern", "machinistePattern")
+          .get()
+          .map((pattern) => [pattern.id, pattern]),
       );
 
       for (const [sourceId, event] of transformedBySourceId) {
@@ -290,6 +311,14 @@ export class AudiotoolProject {
           doesSlide: false,
         });
         created += 1;
+      }
+
+      for (const event of transformedPatternEvents) {
+        if (writePatternStepEvent(transaction, currentPatterns, event, options)) {
+          updated += 1;
+        } else {
+          skipped += 1;
+        }
       }
     });
 
@@ -933,13 +962,204 @@ function isSupportedPatternDevice(deviceType: string | undefined) {
   return deviceType !== undefined && PATTERN_DEVICE_TYPES.has(deviceType);
 }
 
+function writePatternStepEvent(
+  transaction: NexusTransaction,
+  patternsById: Map<string, NexusEntity>,
+  event: DrumEvent,
+  options: AudiotoolWriteOptions,
+) {
+  const patternId = event.source?.entityId;
+  const raw = readPatternStepRaw(event);
+  if (!patternId || !raw) {
+    return false;
+  }
+
+  const pattern = patternsById.get(patternId);
+  const type = entityType(pattern);
+  if (!pattern || !type) {
+    return false;
+  }
+
+  switch (type) {
+    case "beatbox8":
+      return writeBeatbox8StepEvent(transaction, pattern, event, raw, options);
+    case "beatbox9":
+      return writeBeatbox9StepEvent(transaction, pattern, event, raw, options);
+    case "machiniste":
+      return writeMachinisteStepEvent(transaction, pattern, event, raw, options);
+    default:
+      return false;
+  }
+}
+
+function writeBeatbox8StepEvent(
+  transaction: NexusTransaction,
+  pattern: NexusEntity,
+  event: DrumEvent,
+  raw: PatternStepRaw,
+  options: AudiotoolWriteOptions,
+) {
+  if (raw.stepIndex === undefined || !raw.fieldName) {
+    return false;
+  }
+
+  const stepTicks = patternStepTicks(pattern, "beatbox8", options);
+  const steps = readNestedArray(pattern, ["steps"]);
+  const targetStepIndex = targetPatternStepIndex(event.time, stepTicks, steps.length);
+  if (targetStepIndex === undefined) {
+    return false;
+  }
+
+  if (options.forcePatternSixteenthGrid) {
+    updateIfPresent(transaction, pattern, "stepScaleIndex", 3);
+  }
+
+  const oldStep = steps[raw.stepIndex];
+  const targetStep = steps[targetStepIndex];
+  if (!targetStep) {
+    return false;
+  }
+
+  if (raw.stepIndex !== targetStepIndex) {
+    updateIfPresent(transaction, oldStep, raw.fieldName, false);
+  }
+  updateIfPresent(transaction, targetStep, raw.fieldName, true);
+  updateIfPresent(transaction, targetStep, "isAccented", shouldAccentPatternStep(event, options));
+  return true;
+}
+
+function writeBeatbox9StepEvent(
+  transaction: NexusTransaction,
+  pattern: NexusEntity,
+  event: DrumEvent,
+  raw: PatternStepRaw,
+  options: AudiotoolWriteOptions,
+) {
+  if (raw.stepIndex === undefined || !raw.fieldName) {
+    return false;
+  }
+
+  const stepTicks = patternStepTicks(pattern, "beatbox9", options);
+  const steps = readNestedArray(pattern, ["steps"]);
+  const targetStepIndex = targetPatternStepIndex(event.time, stepTicks, steps.length);
+  if (targetStepIndex === undefined) {
+    return false;
+  }
+
+  if (options.forcePatternSixteenthGrid) {
+    updateIfPresent(transaction, pattern, "stepScaleIndex", 3);
+  }
+
+  const oldStep = steps[raw.stepIndex];
+  const targetStep = steps[targetStepIndex];
+  if (!targetStep) {
+    return false;
+  }
+
+  if (raw.stepIndex !== targetStepIndex) {
+    updateIfPresent(transaction, oldStep, raw.fieldName, 0);
+  }
+  updateIfPresent(transaction, targetStep, raw.fieldName, shouldAccentPatternStep(event, options) ? 2 : 1);
+  return true;
+}
+
+function writeMachinisteStepEvent(
+  transaction: NexusTransaction,
+  pattern: NexusEntity,
+  event: DrumEvent,
+  raw: PatternStepRaw,
+  options: AudiotoolWriteOptions,
+) {
+  if (raw.channelIndex === undefined || raw.stepIndex === undefined) {
+    return false;
+  }
+
+  const stepTicks = patternStepTicks(pattern, "machiniste", options);
+  const channelPattern = readNestedArray(pattern, ["channelPatterns"])[raw.channelIndex];
+  const steps = readNestedArray(channelPattern, ["steps"]);
+  const targetStepIndex = targetPatternStepIndex(event.time, stepTicks, steps.length);
+  if (targetStepIndex === undefined) {
+    return false;
+  }
+
+  if (options.forcePatternSixteenthGrid) {
+    updateIfPresent(transaction, pattern, "stepScaleIndex", 1);
+  }
+
+  const oldStep = steps[raw.stepIndex];
+  const targetStep = steps[targetStepIndex];
+  if (!targetStep) {
+    return false;
+  }
+
+  if (raw.stepIndex !== targetStepIndex) {
+    updateIfPresent(transaction, oldStep, "isActive", false);
+  }
+  updateIfPresent(transaction, targetStep, "isActive", true);
+  updateIfPresent(transaction, targetStep, "modulationDepth", patternStepVelocity(event, options));
+  return true;
+}
+
+type PatternStepRaw = {
+  channelIndex?: number;
+  fieldName?: string;
+  stepIndex?: number;
+};
+
+function readPatternStepRaw(event: DrumEvent): PatternStepRaw | undefined {
+  const raw = event.source?.raw;
+  if (!raw || typeof raw !== "object") {
+    return undefined;
+  }
+
+  const values = raw as Record<string, unknown>;
+  return {
+    channelIndex: readRawInteger(values.channelIndex),
+    fieldName: typeof values.fieldName === "string" ? values.fieldName : undefined,
+    stepIndex: readRawInteger(values.stepIndex),
+  };
+}
+
+function readRawInteger(value: unknown) {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+function patternStepTicks(
+  pattern: NexusEntity,
+  deviceType: "beatbox8" | "beatbox9" | "machiniste",
+  options: AudiotoolWriteOptions,
+) {
+  if (options.forcePatternSixteenthGrid) {
+    return TICKS_PER_BEAT / 4;
+  }
+
+  if (deviceType === "machiniste") {
+    return MACHINISTE_STEP_TICKS_BY_SCALE_INDEX[readNumber(pattern, ["stepScaleIndex"], 1)] ?? 960;
+  }
+
+  return BEATBOX_STEP_TICKS_BY_SCALE_INDEX[readNumber(pattern, ["stepScaleIndex"], 3)] ?? 960;
+}
+
+function targetPatternStepIndex(time: number, stepTicks: number, stepCount: number) {
+  const stepIndex = Math.round(time / stepTicks);
+  return stepIndex >= 0 && stepIndex < stepCount ? stepIndex : undefined;
+}
+
+function patternStepVelocity(event: DrumEvent, options: AudiotoolWriteOptions) {
+  return clamp(options.patternVelocity ?? event.velocity, 0.2, 1);
+}
+
+function shouldAccentPatternStep(event: DrumEvent, options: AudiotoolWriteOptions) {
+  return patternStepVelocity(event, options) >= 0.79;
+}
+
 function updateIfPresent(
   transaction: NexusTransaction,
-  entity: NexusEntity,
+  entity: NexusFieldContainer,
   fieldName: string,
   value: unknown,
 ) {
-  const field = entity.fields?.[fieldName];
+  const field = entity?.fields?.[fieldName];
   if (field) {
     transaction.update(field, value);
     return true;

@@ -8,7 +8,7 @@ GrooveLab is an Audiotool drum humanizer. The current framework is **Dilla-fy**:
 - Drags hats late, adds extra offbeat hat swing, and shapes velocity accents by subdivision.
 - Pulls snares slightly forward and lifts beat 4 over beat 2 when both backbeats exist.
 - Shapes close kick pairs so downbeats, or the first offbeat, speak a little louder.
-- Lets the strength control overdrive the framework up to 200% for exaggerated results.
+- Lets the strength control overdrive the framework up to 400% for exaggerated results.
 - Writes timing and velocity changes back to Audiotool `note` entities.
 
 ## Setup
@@ -52,7 +52,7 @@ GrooveLab is an Audiotool drum humanizer. The current framework is **Dilla-fy**:
 
 7. Choose a drum region or **All regions**, choose **Dilla-fy**, set the strength, preview the changes, then click **Write Groove**.
 
-The default Dilla-fy strength is intentionally dramatic at 140%. Pull it back for subtlety, or push it to 200% when you want the timing and velocity changes to be extreme.
+The default Dilla-fy strength is intentionally dramatic at 140%. Pull it back for subtlety, or push it to 400% when you want the timing and velocity changes to be extreme.
 
 The write path updates existing notes from the loaded pattern state and current region selection. Rerolls preview from that loaded state so repeated writes do not keep pushing notes farther unless you reload the project after writing.
 

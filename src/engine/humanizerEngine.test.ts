@@ -13,6 +13,7 @@ const testFramework: HumanizerFramework = {
     hatVelocityJitterMidi: 0,
     snareTimingJitterMs: 0,
     snareVelocityJitterMidi: 0,
+    kickTimingJitterMs: 0,
     kickVelocityJitterMidi: 0,
   },
 };
@@ -44,11 +45,11 @@ describe("applyHumanizerFramework", () => {
       (change) => change.role === "snare" && change.originalTime === TICKS_PER_BEAT,
     );
 
-    expect(hatChange?.shiftMs).toBeGreaterThan(8);
+    expect(hatChange?.shiftMs).toBeGreaterThan(0);
     expect(snareChange?.shiftMs).toBeLessThan(-4);
   });
 
-  it("lowers eighth-note hat offbeats and lifts hats that land with snares", () => {
+  it("lifts eighth-note hat offbeats and hats that land with snares", () => {
     const result = applyHumanizerFramework(createEighthHatPattern(), testFramework, {
       strength: 1,
       tempoBpm: 90,
@@ -78,7 +79,65 @@ describe("applyHumanizerFramework", () => {
     expect(offbeatChange.shiftMs).toBeGreaterThan(downbeatChange.shiftMs);
   });
 
-  it("shapes sixteenth hats as loud, soft, medium, soft groups", () => {
+  it("uses smaller drag values for sixteenth-note hat patterns", () => {
+    const eighthResult = applyHumanizerFramework(createEighthHatPattern(), testFramework, {
+      strength: 1,
+      tempoBpm: 90,
+      seed: "test",
+    });
+    const sixteenthResult = applyHumanizerFramework(createDemoPattern(), testFramework, {
+      strength: 1,
+      tempoBpm: 90,
+      seed: "test",
+    });
+
+    const eighthDownbeat = changeForOriginalTime(eighthResult.changes, 0, "closed_hat");
+    const eighthOffbeat = changeForOriginalTime(
+      eighthResult.changes,
+      TICKS_PER_BEAT / 2,
+      "closed_hat",
+    );
+    const sixteenthDownbeat = changeForOriginalTime(sixteenthResult.changes, 0, "closed_hat");
+    const sixteenthOffbeat = changeForOriginalTime(
+      sixteenthResult.changes,
+      TICKS_PER_BEAT / 4,
+      "closed_hat",
+    );
+
+    expect(sixteenthDownbeat.shiftTicks).toBeLessThan(eighthDownbeat.shiftTicks);
+    expect(sixteenthOffbeat.shiftTicks - sixteenthDownbeat.shiftTicks).toBeLessThan(
+      eighthOffbeat.shiftTicks - eighthDownbeat.shiftTicks,
+    );
+  });
+
+  it("keeps timing shifts beat-relative across project tempos", () => {
+    const slowResult = applyHumanizerFramework(createEighthHatPattern(), testFramework, {
+      strength: 1,
+      tempoBpm: 70,
+      seed: "test",
+    });
+    const fastResult = applyHumanizerFramework(createEighthHatPattern(), testFramework, {
+      strength: 1,
+      tempoBpm: 140,
+      seed: "test",
+    });
+
+    const slowOffbeat = changeForOriginalTime(
+      slowResult.changes,
+      TICKS_PER_BEAT / 2,
+      "closed_hat",
+    );
+    const fastOffbeat = changeForOriginalTime(
+      fastResult.changes,
+      TICKS_PER_BEAT / 2,
+      "closed_hat",
+    );
+
+    expect(slowOffbeat.shiftTicks).toBe(fastOffbeat.shiftTicks);
+    expect(slowOffbeat.shiftMs).toBeGreaterThan(fastOffbeat.shiftMs);
+  });
+
+  it("shapes sixteenth hats with softer offbeat steps", () => {
     const result = applyHumanizerFramework(createDemoPattern(), testFramework, {
       strength: 1,
       tempoBpm: 90,
@@ -93,7 +152,6 @@ describe("applyHumanizerFramework", () => {
 
     expect(group[0]).toBeGreaterThan(group[1]);
     expect(group[2]).toBeGreaterThan(group[3]);
-    expect(group[0]).toBeGreaterThanOrEqual(group[2]);
   });
 
   it("makes the snare on beat four louder than beat two when both exist", () => {
@@ -125,6 +183,30 @@ describe("applyHumanizerFramework", () => {
     expect(firstOffbeatKick).toBeGreaterThan(secondOffbeatKick);
   });
 
+  it("adds only very small seeded timing jitter to kicks", () => {
+    const result = applyHumanizerFramework(
+      createKickPairPattern(),
+      {
+        ...testFramework,
+        parameters: {
+          ...testFramework.parameters,
+          kickTimingJitterMs: 2,
+        },
+      },
+      {
+        strength: 1,
+        tempoBpm: 90,
+        seed: "kick-position",
+      },
+    );
+    const kickShifts = result.changes
+      .filter((change) => change.role === "kick")
+      .map((change) => Math.abs(change.shiftMs));
+
+    expect(Math.max(...kickShifts)).toBeLessThanOrEqual(2.1);
+    expect(kickShifts.some((shiftMs) => shiftMs > 0)).toBe(true);
+  });
+
   it("returns original notes at zero strength", () => {
     const original = createDemoPattern();
     const result = applyHumanizerFramework(original, testFramework, {
@@ -154,7 +236,12 @@ function midiForOriginalTime(events: DrumEvent[], originalTime: number, role: Dr
 }
 
 function changeForOriginalTime(
-  changes: Array<{ originalTime: number; role: DrumEvent["role"]; shiftMs: number }>,
+  changes: Array<{
+    originalTime: number;
+    role: DrumEvent["role"];
+    shiftMs: number;
+    shiftTicks: number;
+  }>,
   originalTime: number,
   role: DrumEvent["role"],
 ) {
