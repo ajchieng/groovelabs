@@ -21,7 +21,12 @@ type TransformContext = {
   tempoBpm: number;
   ticksPerBeat: number;
   hatSubdivision: HatSubdivision;
+  // In eighth-note grooves, this is the dominant eighth-note spine. Extra hats between
+  // those notes are embellishments, so they keep their own velocity instead of being
+  // pulled into the main eighth-hat phrase shape.
   mainEighthHatIds: Set<string>;
+  // If hat shaping would push multiple hats past MIDI 127, subtract one shared offset
+  // so the loudest hat reaches 127 and the rest keep their relative accent spacing.
   hatVelocityCeilingOffsetMidi: number;
   averageHatMidi: number;
   snareBackbeatsById: Map<string, SnareBackbeat>;
@@ -37,6 +42,8 @@ type SnareBackbeat = {
 
 const HAT_ROLES = new Set<DrumRole>(["closed_hat", "open_hat"]);
 const SNARE_ROLES = new Set<DrumRole>(["snare", "clap"]);
+// Timing params are written in familiar milliseconds, then converted through this
+// fixed reference tempo so shifts stay beat-relative across different project BPMs.
 const TIMING_REFERENCE_BPM = 90;
 
 export function applyHumanizerFramework(
@@ -53,6 +60,8 @@ export function applyHumanizerFramework(
   const snareEvents = events.filter((event) => SNARE_ROLES.has(event.role));
   const kickEvents = events.filter((event) => event.role === "kick");
   const roleSummary = summarizeRoles(events);
+  // Detect the eighth-note hat spine before generic subdivision detection so sparse
+  // sixteenth embellishments do not incorrectly make the whole groove read as 16ths.
   const eighthHatGrid = analyzeEighthHatGrid(hats, ticksPerBeat);
   const hatSubdivision = inferHatSubdivision(hats, ticksPerBeat, eighthHatGrid);
 
@@ -70,6 +79,8 @@ export function applyHumanizerFramework(
     snareTimes: snareEvents.map((event) => event.time),
     kickVelocityDeltasById: mapKickVelocityDeltas(kickEvents, ticksPerBeat, framework),
   };
+  // This has to be calculated after the context exists because it uses the same target
+  // velocity logic as the actual hat transform.
   context.hatVelocityCeilingOffsetMidi = calculateHatVelocityCeilingOffset(hats, context);
 
   const transformed = events.map((event) => transformEvent(event, context));
@@ -107,6 +118,8 @@ function transformEvent(event: DrumEvent, context: TransformContext): DrumEvent 
 function transformHat(event: DrumEvent, context: TransformContext): DrumEvent {
   const params = context.framework.parameters;
   const eventSeed = `${context.seed}:${event.id}`;
+  // Hats sit slightly late. Eighth and sixteenth grooves use separate base/offbeat
+  // drag values because dense 16th patterns need a smaller timing move.
   const shiftMs =
     hatBaseDragMs(context) +
     hatSwingOffsetMs(event, context) +
@@ -140,6 +153,8 @@ function transformSnare(event: DrumEvent, context: TransformContext): DrumEvent 
   const params = context.framework.parameters;
   const eventSeed = `${context.seed}:${event.id}`;
   const backbeat = context.snareBackbeatsById.get(event.id);
+  // Recognized beat 2/4 backbeats get the full push. Other snare-like hits still move,
+  // but less, so fills do not get pulled as aggressively as the main backbeat.
   const backbeatStrength = backbeat ? 1 : 0.45;
   const shiftMs =
     -backbeatStrength *
@@ -165,6 +180,8 @@ function transformSnare(event: DrumEvent, context: TransformContext): DrumEvent 
 function transformKick(event: DrumEvent, context: TransformContext): DrumEvent {
   const params = context.framework.parameters;
   const eventSeed = `${context.seed}:${event.id}`;
+  // Kicks get only tiny seeded timing jitter. Velocity shaping is handled separately
+  // by looking at close kick pairs in mapKickVelocityDeltas.
   const shiftMs = params.kickTimingJitterMs * seededSigned(`${eventSeed}:kick-time`);
   const targetMidi =
     velocityToMidi(event.velocity) + (context.kickVelocityDeltasById.get(event.id) ?? 0);
@@ -182,10 +199,13 @@ function hatVelocityDelta(event: DrumEvent, context: TransformContext) {
   const sixteenthInBeat = positiveModulo(sixteenthIndex, 4);
 
   if (context.hatSubdivision === "eighth") {
+    // Only main eighth-grid hats receive the phrase/step accent. Sprinkled-in hats
+    // keep their original velocity so ghost notes do not become unnaturally emphasized.
     if (!context.mainEighthHatIds.has(event.id)) {
       return null;
     }
 
+    // Four-bar phrase shape plus an inside-the-bar downbeat/offbeat shape.
     const barIndex = Math.floor(event.time / (context.ticksPerBeat * BEATS_PER_BAR));
     const barInPhrase = positiveModulo(barIndex, params.hatEighthAccentsMidi.length);
     const eighthInBeat = sixteenthInBeat === 2 ? 1 : 0;
@@ -210,6 +230,8 @@ function hatVelocityTargetMidi(event: DrumEvent, context: TransformContext) {
     return null;
   }
 
+  // Hat accents are relative to the average hat velocity, not the individual note,
+  // so the pattern gets a coherent velocity contour.
   const snareLift = hasNearbySnare(event, context) ? params.hatSnareLiftMidi : 0;
   return context.averageHatMidi + subdivisionDelta + snareLift;
 }
@@ -245,6 +267,8 @@ function shapeVelocity(
     return event.velocity;
   }
 
+  // Generic shaping clamps directly; hats use shapeHatVelocity so clipped accents
+  // can be normalized as a group.
   return midiToVelocity(
     clamp(Math.round(rawShapedMidi(event, targetMidi, jitterMidi, context)), 1, 127),
   );
@@ -260,6 +284,8 @@ function shapeHatVelocity(
     return event.velocity;
   }
 
+  // Subtract the shared ceiling offset before clamping so strong hat accent arrays
+  // stay audible instead of flattening into several 127-velocity notes.
   const shapedMidi =
     rawShapedMidi(event, targetMidi, jitterMidi, context) - context.hatVelocityCeilingOffsetMidi;
   return midiToVelocity(clamp(Math.round(shapedMidi), 1, 127));
@@ -273,6 +299,8 @@ function rawShapedMidi(
 ) {
   const originalMidi = velocityToMidi(event.velocity);
   const eventSeed = `${context.seed}:${event.id}`;
+  // Jitter is seeded from the event id so repeated renders are deterministic until
+  // the app intentionally changes the humanize seed.
   const jitter = jitterMidi * seededSigned(`${eventSeed}:velocity`) * context.strength;
   return originalMidi + (targetMidi - originalMidi) * context.strength + jitter;
 }
@@ -283,6 +311,8 @@ function calculateHatVelocityCeilingOffset(hats: DrumEvent[], context: Transform
   }
 
   const params = context.framework.parameters;
+  // Use the same raw numbers the transform will use, then find how far the loudest
+  // shaped hat would exceed the MIDI ceiling.
   const shapedHatMidis = hats
     .map((event) => {
       const targetMidi = hatVelocityTargetMidi(event, context);
@@ -301,6 +331,8 @@ function calculateHatVelocityCeilingOffset(hats: DrumEvent[], context: Transform
 }
 
 function shiftTime(time: number, shiftMs: number, context: TransformContext) {
+  // Convert the musical timing amount into ticks and keep notes from moving before
+  // the start of the pattern.
   const shiftTicks = Math.round(
     msToTicks(shiftMs * context.strength, TIMING_REFERENCE_BPM, context.ticksPerBeat),
   );
@@ -328,6 +360,8 @@ function inferHatSubdivision(
     return "eighth";
   }
 
+  // Fall back to median spacing on a sixteenth grid. Median spacing is more stable
+  // than averages when a pattern has a few missing or extra hats.
   const sixteenth = ticksPerBeat / 4;
   const slots = hats
     .map((event) => Math.round(event.time / sixteenth))
@@ -361,6 +395,8 @@ function analyzeEighthHatGrid(hats: DrumEvent[], ticksPerBeat: number): EighthHa
   }
 
   const sixteenth = ticksPerBeat / 4;
+  // Eighth-note hats occupy every other sixteenth slot, so the dominant parity is
+  // the candidate main grid and the other parity is treated as embellishment.
   const byParity = new Map<number, Array<{ event: DrumEvent; slot: number }>>([
     [0, []],
     [1, []],
@@ -377,6 +413,8 @@ function analyzeEighthHatGrid(hats: DrumEvent[], ticksPerBeat: number): EighthHa
   const dominant = even.length >= odd.length ? even : odd;
   const embellishments = dominant === even ? odd : even;
 
+  // Require the main grid to be clearly dominant; otherwise a busy 16th pattern should
+  // stay classified as 16ths/mixed instead of being forced into 8ths.
   if (dominant.length < 3 || dominant.length < embellishments.length * 2) {
     return null;
   }
@@ -407,11 +445,15 @@ function medianSlotDiff(slots: number[]) {
 }
 
 function hasNearbySnare(event: DrumEvent, context: TransformContext) {
+  // Slightly lift hats that coincide with a snare/clap, which helps backbeats pop
+  // without changing the snare itself.
   const tolerance = context.ticksPerBeat * 0.08;
   return context.snareTimes.some((time) => Math.abs(time - event.time) <= tolerance);
 }
 
 function mapSnareBackbeats(snareEvents: DrumEvent[], ticksPerBeat: number) {
+  // Backbeat mapping is bar-aware so beat 2 and beat 4 can be compared within
+  // the same bar before applying the beat-four lift / beat-two dip.
   const backbeats = snareEvents
     .map((event) => {
       const beatNumber = backbeatNumber(event.time, ticksPerBeat);
@@ -446,6 +488,7 @@ function mapSnareBackbeats(snareEvents: DrumEvent[], ticksPerBeat: number) {
 }
 
 function backbeatNumber(time: number, ticksPerBeat: number): 2 | 4 | undefined {
+  // Ignore loose snare hits that are too far from a quarter-note grid line.
   if (Math.abs(nearestGridDistance(time, ticksPerBeat)) > ticksPerBeat * 0.12) {
     return undefined;
   }
@@ -469,6 +512,8 @@ function mapKickVelocityDeltas(
   const sortedKicks = [...kicks].sort((a, b) => a.time - b.time || a.id.localeCompare(b.id));
   const params = framework.parameters;
 
+  // Close kick pairs get a small contour: the anchor/first hit is lifted and the
+  // follow-up is dipped, avoiding machine-gun equal velocities.
   for (let index = 0; index < sortedKicks.length - 1; index += 1) {
     const current = sortedKicks[index];
     const next = sortedKicks[index + 1];

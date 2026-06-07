@@ -10,6 +10,8 @@ export function resetPatternToGrooveGrid(
   options: { hatSubdivision?: HatSubdivision; ticksPerBeat?: number; velocity?: number } = {},
 ) {
   const ticksPerBeat = options.ticksPerBeat ?? TICKS_PER_BEAT;
+  // Hats reset to the detected groove grid, but the rest of the kit uses the
+  // role-specific grid below so kicks/snares always land tightly on 16ths.
   const hatGridTicks = hatResetGridTicks(options.hatSubdivision ?? "sixteenth", ticksPerBeat);
   const velocity = clamp(options.velocity ?? RESET_VELOCITY, 0, 1);
 
@@ -39,6 +41,8 @@ function resetGridTicksForRole(role: DrumRole, hatGridTicks: number, ticksPerBea
     return hatGridTicks;
   }
 
+  // Kicks, snares, and claps always hard-quantize to 16ths on reset, regardless
+  // of whether the hat groove is detected as 8ths or 16ths.
   if (role === "kick" || role === "snare" || role === "clap") {
     return ticksPerBeat / 4;
   }

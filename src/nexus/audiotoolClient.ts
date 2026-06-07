@@ -226,6 +226,8 @@ export class AudiotoolProject {
     transformedEvents: DrumEvent[],
     options: AudiotoolWriteOptions = {},
   ): Promise<AudiotoolWriteSummary> {
+    // Keep write-back anchored to the original source ids. The transformed list may
+    // be sorted differently after timing changes, so ids are the stable link.
     const originalsById = new Map(originalEvents.map((event) => [event.id, event]));
     const transformedBySourceId = transformedEvents
       .filter((event) => event.source?.kind === "audiotool-note" && originalsById.has(event.id))
@@ -268,6 +270,7 @@ export class AudiotoolProject {
           continue;
         }
 
+        // Note regions can store exact tick positions and normalized velocity.
         const changedPosition = updateFirstPresent(
           transaction,
           note,
@@ -314,6 +317,8 @@ export class AudiotoolProject {
       }
 
       for (const event of transformedPatternEvents) {
+        // Pattern regions are drum-machine steps, so write-back maps the transformed
+        // event onto the nearest target step for that specific machine type.
         if (writePatternStepEvent(transaction, currentPatterns, event, options)) {
           updated += 1;
         } else {
@@ -1014,6 +1019,8 @@ function writeBeatbox8StepEvent(
     updateIfPresent(transaction, pattern, "stepScaleIndex", 3);
   }
 
+  // Beatbox 8 stores each instrument as a boolean lane plus one shared accent flag
+  // per step, so exact MIDI velocity is reduced to normal/accent.
   const oldStep = steps[raw.stepIndex];
   const targetStep = steps[targetStepIndex];
   if (!targetStep) {
@@ -1050,6 +1057,8 @@ function writeBeatbox9StepEvent(
     updateIfPresent(transaction, pattern, "stepScaleIndex", 3);
   }
 
+  // Beatbox 9 stores instrument values as 0/1/2. That gives off, normal, accent,
+  // but not continuous MIDI-style velocity.
   const oldStep = steps[raw.stepIndex];
   const targetStep = steps[targetStepIndex];
   if (!targetStep) {
@@ -1086,6 +1095,8 @@ function writeMachinisteStepEvent(
     updateIfPresent(transaction, pattern, "stepScaleIndex", 1);
   }
 
+  // Machiniste has a modulationDepth field, so it preserves more continuous velocity
+  // detail than Beatbox pattern lanes.
   const oldStep = steps[raw.stepIndex];
   const targetStep = steps[targetStepIndex];
   if (!targetStep) {

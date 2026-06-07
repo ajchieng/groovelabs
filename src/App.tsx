@@ -310,6 +310,8 @@ export default function App() {
     });
     setIsBusy(true);
     try {
+      // Reset uses a forced 16th-capable pattern grid so Audiotool drum-machine
+      // steps can receive the same hard-quantized positions as note regions.
       const summary = await runProjectOperation((activeProject) =>
         activeProject.writeTransformedPattern(events, resetEvents, {
           forcePatternSixteenthGrid: true,
