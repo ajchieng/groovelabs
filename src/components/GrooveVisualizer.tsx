@@ -6,6 +6,8 @@ type GrooveVisualizerProps = {
   originalEvents: DrumEvent[];
   transformedEvents: DrumEvent[];
   changes: HumanizerChange[];
+  selectedRoles: Record<DrumRole, boolean>;
+  showChangedOnly: boolean;
 };
 
 const ROLE_ORDER: DrumRole[] = [
@@ -32,16 +34,22 @@ export function GrooveVisualizer({
   originalEvents,
   transformedEvents,
   changes,
+  selectedRoles,
+  showChangedOnly,
 }: GrooveVisualizerProps) {
+  const changesById = new Map(changes.map((change) => [change.id, change]));
+  const visibleEvents = showChangedOnly
+    ? transformedEvents.filter((event) => hasVisibleChange(changesById.get(event.id)))
+    : transformedEvents;
   const roles = ROLE_ORDER.filter(
     (role) =>
-      originalEvents.some((event) => event.role === role) ||
-      transformedEvents.some((event) => event.role === role),
+      visibleEvents.some((event) => event.role === role) ||
+      (!showChangedOnly && originalEvents.some((event) => event.role === role)),
   );
   const maxTick = Math.max(
     TICKS_PER_BEAT * 4,
     ...originalEvents.map((event) => event.time + (event.duration ?? 0)),
-    ...transformedEvents.map((event) => event.time + (event.duration ?? 0)),
+    ...visibleEvents.map((event) => event.time + (event.duration ?? 0)),
   );
   const width = 1040;
   const left = 104;
@@ -53,13 +61,23 @@ export function GrooveVisualizer({
 
   const xForTime = (time: number) => left + (time / maxTick) * plotWidth;
   const yForRole = (role: DrumRole) => top + roles.indexOf(role) * laneHeight + laneHeight / 2;
-  const changesById = new Map(changes.map((change) => [change.id, change]));
 
   return (
     <div className="visualizer-shell" aria-label="Before and after groove timing">
+      <div className="visualizer-legend" aria-label="Drum role legend">
+        {roles.map((role) => (
+          <span className="legend-item" data-muted={!selectedRoles[role]} key={role}>
+            <span
+              className="legend-swatch"
+              style={{ backgroundColor: selectedRoles[role] ? ROLE_COLORS[role] : "#9ca3af" }}
+            />
+            {roleLabel(role)}
+          </span>
+        ))}
+      </div>
       <svg viewBox={`0 0 ${width} ${height}`} role="img">
         {roles.map((role) => (
-          <g key={role}>
+          <g className={selectedRoles[role] ? "role-lane" : "role-lane muted-role"} key={role}>
             <text className="lane-label" x="18" y={yForRole(role) + 5}>
               {roleLabel(role)}
             </text>
@@ -85,7 +103,7 @@ export function GrooveVisualizer({
           );
         })}
 
-        {transformedEvents.map((event) => {
+        {visibleEvents.map((event) => {
           const change = changesById.get(event.id);
           if (!change) {
             return null;
@@ -95,10 +113,11 @@ export function GrooveVisualizer({
           const oldX = xForTime(change.originalTime);
           const newX = xForTime(event.time);
           const radius = 5 + event.velocity * 7;
-          const color = ROLE_COLORS[event.role];
+          const isSelected = selectedRoles[event.role];
+          const color = isSelected ? ROLE_COLORS[event.role] : "#9ca3af";
 
           return (
-            <g key={event.id}>
+            <g className={isSelected ? "event-mark" : "event-mark muted-event"} key={event.id}>
               <line
                 className={change.added ? "change-line ghost-line" : "change-line"}
                 x1={oldX}
@@ -129,4 +148,8 @@ export function GrooveVisualizer({
       </svg>
     </div>
   );
+}
+
+function hasVisibleChange(change: HumanizerChange | undefined) {
+  return change !== undefined && (change.shiftTicks !== 0 || change.velocityDelta !== 0);
 }

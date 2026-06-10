@@ -268,7 +268,7 @@ describe("applyHumanizerFramework", () => {
     expect(firstOffbeatKick).toBeGreaterThan(secondOffbeatKick);
   });
 
-  it("adds only very small seeded timing jitter to kicks", () => {
+  it("adds small seeded kick jitter that leans slightly behind the beat", () => {
     const result = applyHumanizerFramework(
       createKickPairPattern(),
       {
@@ -286,9 +286,12 @@ describe("applyHumanizerFramework", () => {
     );
     const kickShifts = result.changes
       .filter((change) => change.role === "kick")
-      .map((change) => Math.abs(change.shiftMs));
+      .map((change) => change.shiftMs);
+    const averageKickShift =
+      kickShifts.reduce((sum, shiftMs) => sum + shiftMs, 0) / kickShifts.length;
 
-    expect(Math.max(...kickShifts)).toBeLessThanOrEqual(2.1);
+    expect(Math.max(...kickShifts.map(Math.abs))).toBeLessThanOrEqual(2.1);
+    expect(averageKickShift).toBeGreaterThan(0);
     expect(kickShifts.some((shiftMs) => shiftMs > 0)).toBe(true);
   });
 

@@ -180,9 +180,9 @@ function transformSnare(event: DrumEvent, context: TransformContext): DrumEvent 
 function transformKick(event: DrumEvent, context: TransformContext): DrumEvent {
   const params = context.framework.parameters;
   const eventSeed = `${context.seed}:${event.id}`;
-  // Kicks get only tiny seeded timing jitter. Velocity shaping is handled separately
-  // by looking at close kick pairs in mapKickVelocityDeltas.
-  const shiftMs = params.kickTimingJitterMs * seededSigned(`${eventSeed}:kick-time`);
+  // Kicks get only tiny seeded timing jitter, biased a touch late so the random
+  // movement leans behind the beat without losing occasional ahead-of-grid hits.
+  const shiftMs = biasedKickTimingJitterMs(params.kickTimingJitterMs, eventSeed);
   const targetMidi =
     velocityToMidi(event.velocity) + (context.kickVelocityDeltasById.get(event.id) ?? 0);
 
@@ -191,6 +191,10 @@ function transformKick(event: DrumEvent, context: TransformContext): DrumEvent {
     time: shiftTime(event.time, shiftMs, context),
     velocity: shapeVelocity(event, targetMidi, params.kickVelocityJitterMidi, context),
   };
+}
+
+function biasedKickTimingJitterMs(jitterMs: number, eventSeed: string) {
+  return jitterMs * clamp(seededSigned(`${eventSeed}:kick-time`) + 0.2, -1, 1);
 }
 
 function hatVelocityDelta(event: DrumEvent, context: TransformContext) {

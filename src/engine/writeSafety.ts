@@ -19,6 +19,7 @@ export type WriteReviewSummary = {
 export type LastWriteSnapshot<TSummary> = {
   action: WriteSnapshotAction;
   regionId: string;
+  selectedRoles?: DrumRole[];
   beforeEvents: DrumEvent[];
   afterEvents: DrumEvent[];
   summary: TSummary;

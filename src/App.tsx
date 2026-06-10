@@ -24,6 +24,14 @@ import {
   resetPatternToGrooveGrid,
 } from "./engine/resetPattern";
 import {
+  DRUM_ROLE_ORDER,
+  applyRoleSelection,
+  createAllRolesSelection,
+  createNoRolesSelection,
+  selectedRolesFromSelection,
+  type RoleSelection,
+} from "./engine/roleSelection";
+import {
   AudiotoolProject,
   type AudiotoolRegion,
   type AudiotoolSession,
@@ -32,6 +40,7 @@ import {
 } from "./nexus/audiotoolClient";
 import type {
   DrumEvent,
+  DrumRole,
   HumanizerChange,
   HumanizerFrameworkId,
 } from "./types/groove";
@@ -66,6 +75,10 @@ export default function App() {
   const [isBusy, setIsBusy] = useState(false);
   const [hasCheckedAuth, setHasCheckedAuth] = useState(false);
   const [pendingWriteAction, setPendingWriteAction] = useState<PendingWriteAction | null>(null);
+  const [showChangedOnly, setShowChangedOnly] = useState(false);
+  const [selectedRoles, setSelectedRoles] = useState<RoleSelection>(() =>
+    createAllRolesSelection(),
+  );
   const [lastWriteSnapshot, setLastWriteSnapshot] =
     useState<LastWriteSnapshot<AudiotoolWriteSummary> | null>(null);
 
@@ -88,24 +101,49 @@ export default function App() {
     [events, humanizeSeed, selectedFramework, strength, tempoBpm],
   );
   const roleCounts = humanizeResult.roleSummary;
-  const previewStats = useMemo(() => summarizePreview(humanizeResult.changes), [humanizeResult]);
-  const resetPreviewEvents = useMemo(
+  const loadedRoleOptions = useMemo(
+    () => DRUM_ROLE_ORDER.filter((role) => roleCounts[role] > 0),
+    [roleCounts],
+  );
+  const resetAllEvents = useMemo(
     () =>
       resetPatternToGrooveGrid(events, {
         hatSubdivision: humanizeResult.hatSubdivision,
       }),
     [events, humanizeResult.hatSubdivision],
   );
-  const activeReviewTarget =
-    pendingWriteAction === "reset" ? resetPreviewEvents : humanizeResult.events;
+  const selectiveHumanizeResult = useMemo(
+    () =>
+      applyRoleSelection({
+        beforeEvents: events,
+        afterEvents: humanizeResult.events,
+        changes: humanizeResult.changes,
+        selectedRoles,
+      }),
+    [events, humanizeResult.changes, humanizeResult.events, selectedRoles],
+  );
+  const activeReviewEvents =
+    pendingWriteAction === "reset" ? resetAllEvents : selectiveHumanizeResult.events;
+  const activeReviewChanges =
+    pendingWriteAction === "reset" ? [] : selectiveHumanizeResult.changes;
+  const activeReviewSelectedCount =
+    pendingWriteAction === "reset" ? events.length : selectiveHumanizeResult.selectedCount;
+  const selectedRoleNames = useMemo(
+    () => selectedRolesFromSelection(selectedRoles),
+    [selectedRoles],
+  );
+  const previewStats = useMemo(
+    () => summarizePreview(selectiveHumanizeResult.changes),
+    [selectiveHumanizeResult.changes],
+  );
   const writeReview = useMemo(
     () =>
       summarizeWriteReview(
         events,
-        activeReviewTarget,
-        pendingWriteAction === "reset" ? [] : humanizeResult.changes,
+        activeReviewEvents,
+        activeReviewChanges,
       ),
-    [activeReviewTarget, events, humanizeResult.changes, pendingWriteAction],
+    [activeReviewChanges, activeReviewEvents, events],
   );
 
   useEffect(() => {
@@ -115,6 +153,15 @@ export default function App() {
       if (!hasAudiotoolClientId) {
         setStatus("Missing VITE_AUDIOTOOL_CLIENT_ID");
         setHasCheckedAuth(true);
+        return;
+      }
+
+      // The OAuth state/code_verifier live in localStorage, which is partitioned per
+      // origin. Audiotool always returns to the registered redirectUrl origin, so if we
+      // start the flow on a different origin (e.g. localhost vs 127.0.0.1) the saved
+      // state is invisible on the callback and login appears to fail the first time.
+      // Bounce to the canonical origin up front so login starts and ends in one place.
+      if (redirectToCanonicalOrigin()) {
         return;
       }
 
@@ -321,6 +368,16 @@ export default function App() {
       return;
     }
 
+    if (!hasSelectedRoles(selectedRoleNames)) {
+      setStatus("Select at least one drum part before writing");
+      return;
+    }
+
+    if (selectiveHumanizeResult.selectedCount === 0) {
+      setStatus("Selected drum parts have no loaded notes");
+      return;
+    }
+
     setPendingWriteAction("groove");
     setStatus("Review groove changes before writing");
   }
@@ -334,7 +391,7 @@ export default function App() {
     setIsBusy(true);
     try {
       const beforeEvents = events;
-      const afterEvents = humanizeResult.events;
+      const afterEvents = selectiveHumanizeResult.events;
       const summary = await runProjectOperation((activeProject) =>
         activeProject.writeTransformedPattern(beforeEvents, afterEvents),
       );
@@ -346,6 +403,7 @@ export default function App() {
             snapshot: {
               action: "groove",
               regionId: selectedRegionId,
+              selectedRoles: selectedRoleNames,
               beforeEvents,
               afterEvents,
               summary,
@@ -395,7 +453,7 @@ export default function App() {
     }
 
     const beforeEvents = events;
-    const resetEvents = resetPreviewEvents;
+    const resetEvents = resetAllEvents;
     setIsBusy(true);
     try {
       // Reset uses a forced 16th-capable pattern grid so Audiotool drum-machine
@@ -414,6 +472,7 @@ export default function App() {
             snapshot: {
               action: "reset",
               regionId: selectedRegionId,
+              selectedRoles: [...DRUM_ROLE_ORDER],
               beforeEvents,
               afterEvents: resetEvents,
               summary,
@@ -496,6 +555,8 @@ export default function App() {
       selectedRegionId,
       selectedRegion: regionStatusName(regions, selectedRegionId),
       tempoBpm,
+      selectedRoles: selectedRoleNames,
+      roleSelection: selectedRoles,
       writeReview,
       events,
     };
@@ -520,6 +581,23 @@ export default function App() {
     setLastWriteSnapshot((current) =>
       reduceLastWriteSnapshot(current, { type: "workspace-changed" }),
     );
+  }
+
+  function toggleSelectedRole(role: DrumRole) {
+    setSelectedRoles((current) => ({
+      ...current,
+      [role]: !current[role],
+    }));
+  }
+
+  function selectAllRoles() {
+    setSelectedRoles(createAllRolesSelection());
+    setStatus("Selected all drum parts");
+  }
+
+  function selectNoRoles() {
+    setSelectedRoles(createNoRolesSelection());
+    setStatus("Deselected all drum parts");
   }
 
   function chooseDifferentProject() {
@@ -686,9 +764,10 @@ export default function App() {
       ) : (
         <main className="workspace">
           <aside className="control-panel">
-            <section className="panel-block">
+            <section className="panel-block workflow-step">
               <div className="section-title">
                 <Cable size={18} />
+                <span className="step-index">1</span>
                 <h2>Project</h2>
               </div>
               <div className="project-url-display" title={projectUrl}>
@@ -763,10 +842,11 @@ export default function App() {
               )}
             </section>
 
-            <section className="panel-block">
+            <section className="panel-block workflow-step">
               <div className="section-title">
                 <SlidersHorizontal size={18} />
-                <h2>Humanizer</h2>
+                <span className="step-index">2</span>
+                <h2>Groove</h2>
               </div>
 
               <div className="framework-list" role="listbox" aria-label="Humanizer framework">
@@ -799,6 +879,39 @@ export default function App() {
                 onChange={(event) => setStrength(Number(event.target.value))}
               />
 
+              {loadedRoleOptions.length > 0 && (
+                <div className="role-selector">
+                  <div className="role-selector-header">
+                    <span>Apply groove to</span>
+                    <div className="role-selector-actions">
+                      <button className="mini-button" type="button" onClick={selectAllRoles}>
+                        All
+                      </button>
+                      <button className="mini-button" type="button" onClick={selectNoRoles}>
+                        None
+                      </button>
+                    </div>
+                  </div>
+                  <div className="role-toggle-grid">
+                    {loadedRoleOptions.map((role) => (
+                      <label
+                        className="role-toggle"
+                        data-active={selectedRoles[role]}
+                        key={role}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedRoles[role]}
+                          onChange={() => toggleSelectedRole(role)}
+                        />
+                        <span>{roleLabel(role)}</span>
+                        <strong>{roleCounts[role]}</strong>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div className="button-row">
                 <button
                   className="secondary-button"
@@ -809,6 +922,20 @@ export default function App() {
                   Reroll
                 </button>
                 <button
+                  className="primary-button"
+                  type="button"
+                  onClick={reviewWriteBack}
+                  disabled={
+                    isBusy ||
+                    events.length === 0 ||
+                    !hasSelectedRoles(selectedRoleNames) ||
+                    selectiveHumanizeResult.selectedCount === 0
+                  }
+                >
+                  <Save size={17} />
+                  Review Groove
+                </button>
+                <button
                   className="secondary-button"
                   type="button"
                   onClick={reviewResetPattern}
@@ -816,27 +943,39 @@ export default function App() {
                   title="Review quantizing and uniform velocity before writing"
                 >
                   <Undo2 size={17} />
-                  Review Reset
+                  Review Full Reset
                 </button>
               </div>
             </section>
           </aside>
 
-          <section className="stage">
+          <section className="stage workflow-step">
             <div className="stage-header">
-              <div>
-                <h2>{selectedFramework.name}</h2>
+              <div className="stage-title">
+                <div className="section-title">
+                  <Drum size={18} />
+                  <span className="step-index">3</span>
+                  <h2>Preview</h2>
+                </div>
+                <h3>{selectedFramework.name}</h3>
                 <p>{humanizeResult.explanation}</p>
               </div>
-              <button
-                className="primary-button"
-                type="button"
-                onClick={reviewWriteBack}
-                disabled={isBusy || events.length === 0}
-              >
-                <Save size={17} />
-                Review Write
-              </button>
+              <div className="segmented-control" aria-label="Visualizer view">
+                <button
+                  type="button"
+                  data-active={!showChangedOnly}
+                  onClick={() => setShowChangedOnly(false)}
+                >
+                  All notes
+                </button>
+                <button
+                  type="button"
+                  data-active={showChangedOnly}
+                  onClick={() => setShowChangedOnly(true)}
+                >
+                  Changed only
+                </button>
+              </div>
             </div>
 
             <div className="summary-grid">
@@ -888,12 +1027,22 @@ export default function App() {
                   <p>
                     {writeActionLabel(pendingWriteAction)} will target{" "}
                     <strong>{regionStatusName(regions, selectedRegionId)}</strong> with{" "}
-                    <strong>{writeReview.totalEvents}</strong> loaded notes.
+                    {pendingWriteAction === "reset" ? (
+                      <>
+                        <strong>{writeReview.totalEvents}</strong> loaded notes.
+                      </>
+                    ) : (
+                      <>
+                        <strong>{activeReviewSelectedCount}</strong> selected of{" "}
+                        <strong>{writeReview.totalEvents}</strong> loaded notes.
+                      </>
+                    )}
                   </p>
                   {pendingWriteAction === "groove" && writeReview.unknownEvents > 0 && (
                     <div className="review-notice">
-                      {writeReview.unknownEvents} unknown roles are left unchanged by the groove
-                      engine.
+                      {selectedRoles.unknown
+                        ? `${writeReview.unknownEvents} unknown roles are selected, but the groove engine leaves them unchanged.`
+                        : `${writeReview.unknownEvents} unknown roles are deselected and will stay unchanged.`}
                     </div>
                   )}
                   {pendingWriteAction === "reset" && writeReview.unknownEvents > 0 && (
@@ -934,7 +1083,13 @@ export default function App() {
                     onClick={() => {
                       void confirmPendingWrite();
                     }}
-                    disabled={isBusy || writeReview.totalEvents === 0}
+                    disabled={
+                      isBusy ||
+                      writeReview.totalEvents === 0 ||
+                      (pendingWriteAction === "groove" &&
+                        (!hasSelectedRoles(selectedRoleNames) ||
+                          activeReviewSelectedCount === 0))
+                    }
                   >
                     <Check size={17} />
                     Confirm {writeActionLabel(pendingWriteAction)}
@@ -953,8 +1108,10 @@ export default function App() {
 
             <GrooveVisualizer
               originalEvents={events}
-              transformedEvents={humanizeResult.events}
-              changes={humanizeResult.changes}
+              transformedEvents={selectiveHumanizeResult.events}
+              changes={selectiveHumanizeResult.changes}
+              selectedRoles={selectedRoles}
+              showChangedOnly={showChangedOnly}
             />
 
             <div className="analysis-panel">
@@ -963,7 +1120,7 @@ export default function App() {
                 <p>{humanizeResult.explanation}</p>
               </div>
               <div className="change-list">
-                {humanizeResult.changes
+                {selectiveHumanizeResult.changes
                   .filter((change) => change.shiftTicks !== 0 || change.velocityDelta !== 0)
                   .slice(0, 12)
                   .map((change) => (
@@ -1037,6 +1194,10 @@ function formatSigned(value: number) {
   return `${rounded >= 0 ? "+" : ""}${rounded}`;
 }
 
+function hasSelectedRoles(roles: readonly DrumRole[]) {
+  return roles.length > 0;
+}
+
 function writeActionLabel(action: WriteSnapshotAction) {
   if (action === "reset") {
     return "Reset";
@@ -1084,6 +1245,21 @@ function clearAudiotoolOauthState() {
       window.localStorage.removeItem(key);
     }
   }
+}
+
+function redirectToCanonicalOrigin() {
+  const canonicalOrigin = new URL(redirectUrl).origin;
+  if (window.location.origin === canonicalOrigin) {
+    return false;
+  }
+
+  // Preserve the path, query (OAuth callback params), and hash; only swap the origin.
+  const target = new URL(window.location.href);
+  const canonical = new URL(canonicalOrigin);
+  target.protocol = canonical.protocol;
+  target.host = canonical.host;
+  window.location.replace(target.toString());
+  return true;
 }
 
 function cleanStaleAudiotoolLoginStateOnBoot() {
