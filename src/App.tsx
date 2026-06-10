@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  AlertTriangle,
   Cable,
+  Check,
+  Download,
   Drum,
   LogIn,
   LogOut,
@@ -9,6 +12,7 @@ import {
   Save,
   SlidersHorizontal,
   Undo2,
+  X,
 } from "lucide-react";
 import { GrooveVisualizer } from "./components/GrooveVisualizer";
 import { defaultFramework, humanizerFrameworks } from "./data/humanizerFrameworks";
@@ -23,6 +27,7 @@ import {
   AudiotoolProject,
   type AudiotoolRegion,
   type AudiotoolSession,
+  type AudiotoolWriteSummary,
   createAudiotoolSession,
 } from "./nexus/audiotoolClient";
 import type {
@@ -30,12 +35,20 @@ import type {
   HumanizerChange,
   HumanizerFrameworkId,
 } from "./types/groove";
+import {
+  reduceLastWriteSnapshot,
+  summarizeWriteReview,
+  undoTargetEvents,
+  type LastWriteSnapshot,
+  type WriteSnapshotAction,
+} from "./engine/writeSafety";
 
 const clientId = import.meta.env.VITE_AUDIOTOOL_CLIENT_ID?.trim() ?? "";
 const redirectUrl = "http://127.0.0.1:5173/";
 const lastProjectUrlKey = "groovelab:last-project-url";
 const audiotoolOauthStoragePrefix = `oidc_${clientId}_oidc_`;
 const allRegionsId = "__all__";
+type PendingWriteAction = Extract<WriteSnapshotAction, "groove" | "reset">;
 
 export default function App() {
   const [session, setSession] = useState<AudiotoolSession | null>(null);
@@ -52,6 +65,9 @@ export default function App() {
   const [status, setStatus] = useState("Checking Audiotool session");
   const [isBusy, setIsBusy] = useState(false);
   const [hasCheckedAuth, setHasCheckedAuth] = useState(false);
+  const [pendingWriteAction, setPendingWriteAction] = useState<PendingWriteAction | null>(null);
+  const [lastWriteSnapshot, setLastWriteSnapshot] =
+    useState<LastWriteSnapshot<AudiotoolWriteSummary> | null>(null);
 
   const hasAudiotoolClientId = clientId.length > 0;
   const isAuthenticated = session?.status === "authenticated";
@@ -73,6 +89,24 @@ export default function App() {
   );
   const roleCounts = humanizeResult.roleSummary;
   const previewStats = useMemo(() => summarizePreview(humanizeResult.changes), [humanizeResult]);
+  const resetPreviewEvents = useMemo(
+    () =>
+      resetPatternToGrooveGrid(events, {
+        hatSubdivision: humanizeResult.hatSubdivision,
+      }),
+    [events, humanizeResult.hatSubdivision],
+  );
+  const activeReviewTarget =
+    pendingWriteAction === "reset" ? resetPreviewEvents : humanizeResult.events;
+  const writeReview = useMemo(
+    () =>
+      summarizeWriteReview(
+        events,
+        activeReviewTarget,
+        pendingWriteAction === "reset" ? [] : humanizeResult.changes,
+      ),
+    [activeReviewTarget, events, humanizeResult.changes, pendingWriteAction],
+  );
 
   useEffect(() => {
     let isMounted = true;
@@ -201,6 +235,7 @@ export default function App() {
       setSelectedRegionId(allRegionsId);
       setTempoBpm(snapshot.tempoBpm);
       setHumanizeSeed((seed) => seed + 1);
+      clearPendingWriteState();
       storeProjectUrl(trimmedProjectUrl);
       setStatus(
         snapshot.events.length > 0
@@ -232,6 +267,7 @@ export default function App() {
       }
       setTempoBpm(snapshot.tempoBpm);
       setHumanizeSeed((seed) => seed + 1);
+      clearPendingWriteState();
       setStatus(
         `Reloaded ${snapshot.events.length} notes from ${regionStatusName(
           snapshot.regions,
@@ -260,6 +296,7 @@ export default function App() {
       setRegions(snapshot.regions);
       setTempoBpm(snapshot.tempoBpm);
       setHumanizeSeed((seed) => seed + 1);
+      clearPendingWriteState();
       setStatus(
         `Focused ${snapshot.events.length} notes in ${regionStatusName(
           snapshot.regions,
@@ -273,6 +310,21 @@ export default function App() {
     }
   }
 
+  function reviewWriteBack() {
+    if (!project) {
+      setStatus("Open a project before writing");
+      return;
+    }
+
+    if (events.length === 0) {
+      setStatus("No notes loaded to write");
+      return;
+    }
+
+    setPendingWriteAction("groove");
+    setStatus("Review groove changes before writing");
+  }
+
   async function writeBack() {
     if (!project) {
       setStatus("Open a project before writing");
@@ -281,17 +333,54 @@ export default function App() {
 
     setIsBusy(true);
     try {
+      const beforeEvents = events;
+      const afterEvents = humanizeResult.events;
       const summary = await runProjectOperation((activeProject) =>
-        activeProject.writeTransformedPattern(events, humanizeResult.events),
+        activeProject.writeTransformedPattern(beforeEvents, afterEvents),
       );
+      if (summary.updated > 0 || summary.created > 0) {
+        setEvents(afterEvents);
+        setLastWriteSnapshot((current) =>
+          reduceLastWriteSnapshot(current, {
+            type: "write-succeeded",
+            snapshot: {
+              action: "groove",
+              regionId: selectedRegionId,
+              beforeEvents,
+              afterEvents,
+              summary,
+              createdAt: Date.now(),
+            },
+          }),
+        );
+        setHumanizeSeed((seed) => seed + 1);
+      } else {
+        setLastWriteSnapshot(null);
+      }
+      setPendingWriteAction(null);
       setStatus(
-        `Wrote ${summary.updated} notes, created ${summary.created}, skipped ${summary.skipped}`,
+        `Wrote ${summary.updated} notes, created ${summary.created}, skipped ${summary.skipped}. Loaded state now reflects the write.`,
       );
     } catch (error) {
       setStatus(errorMessage(error));
     } finally {
       setIsBusy(false);
     }
+  }
+
+  function reviewResetPattern() {
+    if (!project) {
+      setStatus("Open a project before resetting");
+      return;
+    }
+
+    if (events.length === 0) {
+      setStatus("No notes loaded to reset");
+      return;
+    }
+
+    setPendingWriteAction("reset");
+    setStatus("Review reset before writing");
   }
 
   async function resetPattern() {
@@ -305,23 +394,38 @@ export default function App() {
       return;
     }
 
-    const resetEvents = resetPatternToGrooveGrid(events, {
-      hatSubdivision: humanizeResult.hatSubdivision,
-    });
+    const beforeEvents = events;
+    const resetEvents = resetPreviewEvents;
     setIsBusy(true);
     try {
       // Reset uses a forced 16th-capable pattern grid so Audiotool drum-machine
       // steps can receive the same hard-quantized positions as note regions.
       const summary = await runProjectOperation((activeProject) =>
-        activeProject.writeTransformedPattern(events, resetEvents, {
+        activeProject.writeTransformedPattern(beforeEvents, resetEvents, {
           forcePatternSixteenthGrid: true,
           patternVelocity: RESET_VELOCITY,
         }),
       );
       if (summary.updated > 0 || summary.created > 0) {
         setEvents(resetEvents);
+        setLastWriteSnapshot((current) =>
+          reduceLastWriteSnapshot(current, {
+            type: "write-succeeded",
+            snapshot: {
+              action: "reset",
+              regionId: selectedRegionId,
+              beforeEvents,
+              afterEvents: resetEvents,
+              summary,
+              createdAt: Date.now(),
+            },
+          }),
+        );
         setHumanizeSeed((seed) => seed + 1);
+      } else {
+        setLastWriteSnapshot(null);
       }
+      setPendingWriteAction(null);
       setStatus(
         `Reset ${summary.updated} notes. Hats to ${hatSubdivisionLabel(humanizeResult.hatSubdivision)}, kicks/snares to 16ths, velocity ${RESET_VELOCITY_MIDI}, skipped ${summary.skipped}`,
       );
@@ -332,12 +436,99 @@ export default function App() {
     }
   }
 
+  async function confirmPendingWrite() {
+    if (pendingWriteAction === "reset") {
+      await resetPattern();
+      return;
+    }
+
+    if (pendingWriteAction === "groove") {
+      await writeBack();
+    }
+  }
+
+  function cancelPendingWrite() {
+    setPendingWriteAction(null);
+    setStatus("Write canceled");
+  }
+
+  async function undoLastWrite() {
+    if (!lastWriteSnapshot) {
+      setStatus("No write to undo");
+      return;
+    }
+
+    if (!project) {
+      setStatus("Open a project before undoing");
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      const summary = await runProjectOperation((activeProject) =>
+        activeProject.writeTransformedPattern(
+          lastWriteSnapshot.afterEvents,
+          undoTargetEvents(lastWriteSnapshot),
+        ),
+      );
+      setEvents(lastWriteSnapshot.beforeEvents);
+      setHumanizeSeed((seed) => seed + 1);
+      clearPendingWriteState();
+      setStatus(
+        `Undid ${writeActionLabel(lastWriteSnapshot.action).toLowerCase()}: wrote ${summary.updated} notes, created ${summary.created}, skipped ${summary.skipped}`,
+      );
+    } catch (error) {
+      setStatus(errorMessage(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  function exportSnapshot() {
+    if (events.length === 0) {
+      setStatus("No loaded notes to export");
+      return;
+    }
+
+    const snapshot = {
+      exportedAt: new Date().toISOString(),
+      projectUrl,
+      selectedRegionId,
+      selectedRegion: regionStatusName(regions, selectedRegionId),
+      tempoBpm,
+      writeReview,
+      events,
+    };
+    const blob = new Blob([JSON.stringify(snapshot, null, 2)], {
+      type: "application/json",
+    });
+    const snapshotUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = snapshotUrl;
+    anchor.download = `groovelab-${safeFilename(
+      regionStatusName(regions, selectedRegionId),
+    )}-${timestampForFilename()}.json`;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(snapshotUrl), 0);
+    setStatus(
+      `Exported ${events.length} notes from ${regionStatusName(regions, selectedRegionId)}`,
+    );
+  }
+
+  function clearPendingWriteState() {
+    setPendingWriteAction(null);
+    setLastWriteSnapshot((current) =>
+      reduceLastWriteSnapshot(current, { type: "workspace-changed" }),
+    );
+  }
+
   function chooseDifferentProject() {
     void closeProject(project);
     setProject(null);
     setEvents([]);
     setRegions([]);
     setSelectedRegionId(allRegionsId);
+    clearPendingWriteState();
     setStatus("Choose an Audiotool project");
   }
 
@@ -351,6 +542,7 @@ export default function App() {
     setEvents([]);
     setRegions([]);
     setSelectedRegionId(allRegionsId);
+    clearPendingWriteState();
     setStatus("Logged out");
   }
 
@@ -363,6 +555,7 @@ export default function App() {
     setRegions([]);
     setSelectedRegionId(allRegionsId);
     setHasCheckedAuth(false);
+    clearPendingWriteState();
     setStatus("Reset Audiotool login state");
     window.location.assign(redirectUrl);
   }
@@ -520,6 +713,27 @@ export default function App() {
                   <Cable size={17} />
                   Change
                 </button>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={exportSnapshot}
+                  disabled={isBusy || events.length === 0}
+                >
+                  <Download size={17} />
+                  Export
+                </button>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => {
+                    void undoLastWrite();
+                  }}
+                  disabled={isBusy || !lastWriteSnapshot}
+                  title={lastWriteSnapshot ? undoTitle(lastWriteSnapshot) : "No write to undo"}
+                >
+                  <Undo2 size={17} />
+                  Undo Write
+                </button>
                 <button className="icon-button" type="button" onClick={logout} title="Log out">
                   <LogOut size={17} />
                 </button>
@@ -597,12 +811,12 @@ export default function App() {
                 <button
                   className="secondary-button"
                   type="button"
-                  onClick={resetPattern}
+                  onClick={reviewResetPattern}
                   disabled={isBusy || events.length === 0}
-                  title="Quantize to 16ths and reset velocity"
+                  title="Review quantizing and uniform velocity before writing"
                 >
                   <Undo2 size={17} />
-                  Reset
+                  Review Reset
                 </button>
               </div>
             </section>
@@ -617,11 +831,11 @@ export default function App() {
               <button
                 className="primary-button"
                 type="button"
-                onClick={writeBack}
+                onClick={reviewWriteBack}
                 disabled={isBusy || events.length === 0}
               >
                 <Save size={17} />
-                Write Groove
+                Review Write
               </button>
             </div>
 
@@ -658,7 +872,84 @@ export default function App() {
                 <span>Hats</span>
                 <strong>{roleCounts.closed_hat + roleCounts.open_hat}</strong>
               </div>
+              <div className="summary-tile" data-warning={roleCounts.unknown > 0}>
+                <span>Unknown</span>
+                <strong>{roleCounts.unknown}</strong>
+              </div>
             </div>
+
+            {pendingWriteAction && (
+              <div className="write-review-panel">
+                <div className="write-review-copy">
+                  <div className="section-title">
+                    <AlertTriangle size={18} />
+                    <h3>{writeActionLabel(pendingWriteAction)} Review</h3>
+                  </div>
+                  <p>
+                    {writeActionLabel(pendingWriteAction)} will target{" "}
+                    <strong>{regionStatusName(regions, selectedRegionId)}</strong> with{" "}
+                    <strong>{writeReview.totalEvents}</strong> loaded notes.
+                  </p>
+                  {pendingWriteAction === "groove" && writeReview.unknownEvents > 0 && (
+                    <div className="review-notice">
+                      {writeReview.unknownEvents} unknown roles are left unchanged by the groove
+                      engine.
+                    </div>
+                  )}
+                  {pendingWriteAction === "reset" && writeReview.unknownEvents > 0 && (
+                    <div className="review-notice">
+                      {writeReview.unknownEvents} unknown roles will reset to the detected hat
+                      grid and uniform velocity.
+                    </div>
+                  )}
+                  {writeReview.includesPatternSteps && (
+                    <div className="review-warning">
+                      Pattern-step regions use Audiotool's step/accent representation, so exact
+                      MIDI velocity may be reduced on write.
+                    </div>
+                  )}
+                </div>
+                <div className="review-metrics">
+                  <div>
+                    <span>Changed</span>
+                    <strong>{writeReview.changedEvents}</strong>
+                  </div>
+                  <div>
+                    <span>Expected skipped</span>
+                    <strong>{writeReview.expectedSkippedEvents}</strong>
+                  </div>
+                  <div>
+                    <span>Max move</span>
+                    <strong>{writeReview.maxShiftMs} ms</strong>
+                  </div>
+                  <div>
+                    <span>Velocity delta</span>
+                    <strong>{writeReview.maxVelocityDeltaMidi}</strong>
+                  </div>
+                </div>
+                <div className="button-row review-actions">
+                  <button
+                    className="primary-button"
+                    type="button"
+                    onClick={() => {
+                      void confirmPendingWrite();
+                    }}
+                    disabled={isBusy || writeReview.totalEvents === 0}
+                  >
+                    <Check size={17} />
+                    Confirm {writeActionLabel(pendingWriteAction)}
+                  </button>
+                  <button
+                    className="icon-button"
+                    type="button"
+                    onClick={cancelPendingWrite}
+                    title="Cancel write"
+                  >
+                    <X size={17} />
+                  </button>
+                </div>
+              </div>
+            )}
 
             <GrooveVisualizer
               originalEvents={events}
@@ -744,6 +1035,39 @@ function velocityDeltaMidi(change: HumanizerChange) {
 function formatSigned(value: number) {
   const rounded = Number.isInteger(value) ? value : Math.round(value * 10) / 10;
   return `${rounded >= 0 ? "+" : ""}${rounded}`;
+}
+
+function writeActionLabel(action: WriteSnapshotAction) {
+  if (action === "reset") {
+    return "Reset";
+  }
+
+  if (action === "undo") {
+    return "Undo";
+  }
+
+  return "Write Groove";
+}
+
+function undoTitle(snapshot: LastWriteSnapshot<AudiotoolWriteSummary>) {
+  const time = new Date(snapshot.createdAt).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return `Undo ${writeActionLabel(snapshot.action).toLowerCase()} from ${time}`;
+}
+
+function safeFilename(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48) || "snapshot";
+}
+
+function timestampForFilename() {
+  return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
 function readStoredProjectUrl() {

@@ -210,6 +210,11 @@ button:disabled {
   font-size: 0.95rem;
 }
 
+.section-title h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
 .notice {
   padding: 10px 11px;
   border: 1px solid #fecaca;
@@ -399,7 +404,7 @@ button:disabled {
 
 .summary-grid {
   display: grid;
-  grid-template-columns: repeat(8, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
   gap: 9px;
   margin-bottom: 16px;
 }
@@ -425,6 +430,83 @@ button:disabled {
   color: #15171a;
   font-size: 1.35rem;
   margin-top: 6px;
+}
+
+.summary-tile[data-warning="true"] {
+  border-color: #f59e0b;
+  background: #fffbeb;
+}
+
+.write-review-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(260px, 0.85fr);
+  gap: 16px;
+  border: 1px solid #f59e0b;
+  border-radius: 8px;
+  background: #fffbeb;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.write-review-copy p {
+  margin: 0 0 10px;
+  color: #343b37;
+  line-height: 1.5;
+}
+
+.review-notice,
+.review-warning {
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-size: 0.86rem;
+  line-height: 1.4;
+}
+
+.review-notice {
+  border: 1px solid rgba(15, 118, 110, 0.24);
+  color: #115e59;
+  background: #f0fdfa;
+}
+
+.review-warning {
+  margin-top: 8px;
+  border: 1px solid rgba(180, 83, 9, 0.28);
+  color: #7c2d12;
+  background: #fff7ed;
+}
+
+.review-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.review-metrics div {
+  min-height: 62px;
+  border: 1px solid rgba(21, 23, 26, 0.1);
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px;
+}
+
+.review-metrics span {
+  display: block;
+  color: #59635d;
+  font-size: 0.76rem;
+  font-weight: 800;
+  line-height: 1.15;
+}
+
+.review-metrics strong {
+  display: block;
+  color: #15171a;
+  font-size: 1.32rem;
+  margin-top: 6px;
+}
+
+.review-actions {
+  grid-column: 1 / -1;
+  margin: 0;
 }
 
 .visualizer-shell {
@@ -524,12 +606,6 @@ button:disabled {
   font-weight: 800;
 }
 
-@media (max-width: 1180px) {
-  .summary-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 860px) {
   .topbar,
   .stage-header,
@@ -547,16 +623,13 @@ button:disabled {
   }
 
   .control-panel,
-  .analysis-panel {
+  .analysis-panel,
+  .write-review-panel {
     grid-template-columns: 1fr;
   }
 
   .visualizer-shell svg {
     min-width: 640px;
-  }
-
-  .summary-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

@@ -21,7 +21,7 @@ export const humanizerFrameworks: HumanizerFramework[] = [
       // Per-beat eighth-note contour: downbeat eighth, then offbeat eighth.
       hatEighthStepAccentsMidi: [10, -10],
       // Four sixteenth positions inside a beat.
-      hatSixteenthAccentsMidi: [14, -8, 12, -6],
+      hatSixteenthAccentsMidi: [16, -8, 10, -6],
       hatSnareLiftMidi: 3,
       // Snare push is negative in the engine: this value moves backbeats earlier.
       snarePushMs: 10,
