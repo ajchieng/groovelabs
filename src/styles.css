@@ -424,6 +424,22 @@ button:disabled {
   margin-bottom: 14px;
 }
 
+.adjustment-selector {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.adjustment-selector > span {
+  color: #59635d;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.adjustment-selector .segmented-control {
+  justify-self: start;
+}
+
 .role-selector {
   display: grid;
   gap: 9px;
@@ -593,6 +609,11 @@ button:disabled {
   color: #15171a;
   font-size: 1.35rem;
   margin-top: 6px;
+}
+
+.summary-tile strong[data-small="true"] {
+  font-size: 1rem;
+  line-height: 1.2;
 }
 
 .summary-tile[data-warning="true"] {

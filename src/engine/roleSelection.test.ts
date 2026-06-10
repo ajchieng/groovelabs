@@ -113,6 +113,47 @@ describe("applyRoleSelection", () => {
       newVelocity: 0.7,
     });
   });
+
+  it("can apply position changes while preserving original velocities", () => {
+    const before = [makeEvent("hat", "closed_hat", 480, 0.5)];
+    const after = [makeEvent("hat", "closed_hat", 600, 0.8)];
+    const result = applyRoleSelection({
+      beforeEvents: before,
+      afterEvents: after,
+      changes: makeChanges(before, after),
+      selectedRoles: createAllRolesSelection(),
+      adjustmentMode: "position",
+    });
+
+    expect(eventFor(result.events, "hat")).toMatchObject({ time: 600, velocity: 0.5 });
+    expect(result.changes[0]).toMatchObject({
+      shiftTicks: 120,
+      velocityDelta: 0,
+      originalVelocity: 0.5,
+      newVelocity: 0.5,
+    });
+  });
+
+  it("can apply velocity changes while preserving original positions", () => {
+    const before = [makeEvent("snare", "snare", 960, 0.6)];
+    const after = [makeEvent("snare", "snare", 1080, 0.72)];
+    const result = applyRoleSelection({
+      beforeEvents: before,
+      afterEvents: after,
+      changes: makeChanges(before, after),
+      selectedRoles: createAllRolesSelection(),
+      adjustmentMode: "velocity",
+    });
+
+    expect(eventFor(result.events, "snare")).toMatchObject({ time: 960, velocity: 0.72 });
+    expect(result.changes[0]).toMatchObject({
+      shiftTicks: 0,
+      shiftMs: 0,
+      originalTime: 960,
+      newTime: 960,
+    });
+    expect(result.changes[0].velocityDelta).toBeCloseTo(0.12);
+  });
 });
 
 function selectionWith(overrides: Partial<RoleSelection>) {

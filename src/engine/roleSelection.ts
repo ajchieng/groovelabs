@@ -12,6 +12,7 @@ export const DRUM_ROLE_ORDER: readonly DrumRole[] = [
 ];
 
 export type RoleSelection = Record<DrumRole, boolean>;
+export type GrooveAdjustmentMode = "position-velocity" | "position" | "velocity";
 
 export type SelectiveRoleResult = {
   events: DrumEvent[];
@@ -38,11 +39,13 @@ export function applyRoleSelection({
   afterEvents,
   changes,
   selectedRoles,
+  adjustmentMode = "position-velocity",
 }: {
   beforeEvents: readonly DrumEvent[];
   afterEvents: readonly DrumEvent[];
   changes: readonly HumanizerChange[];
   selectedRoles: RoleSelection;
+  adjustmentMode?: GrooveAdjustmentMode;
 }): SelectiveRoleResult {
   const uniqueBefore = uniqueById(beforeEvents, "applyRoleSelection.before");
   const uniqueAfter = uniqueById(afterEvents, "applyRoleSelection.after");
@@ -72,9 +75,12 @@ export function applyRoleSelection({
     }
 
     if (selectedRoles[role]) {
+      const selectiveEvent = applyAdjustmentMode(beforeEvent, afterEvent, adjustmentMode);
       selectedCount += 1;
-      selectiveEvents.push(afterEvent);
-      selectiveChanges.push(changesById.get(afterEvent.id) ?? makeZeroChange(beforeEvent));
+      selectiveEvents.push(selectiveEvent);
+      selectiveChanges.push(
+        makeSelectiveChange(beforeEvent, selectiveEvent, changesById.get(afterEvent.id)),
+      );
     } else {
       selectiveEvents.push(beforeEvent);
       selectiveChanges.push(makeZeroChange(beforeEvent));
@@ -105,6 +111,58 @@ export function applyRoleSelection({
 
 export function createEmptyRoleSummary(): RoleSummary {
   return Object.fromEntries(DRUM_ROLE_ORDER.map((role) => [role, 0])) as RoleSummary;
+}
+
+function applyAdjustmentMode(
+  beforeEvent: DrumEvent,
+  afterEvent: DrumEvent,
+  adjustmentMode: GrooveAdjustmentMode,
+): DrumEvent {
+  switch (adjustmentMode) {
+    case "position":
+      return {
+        ...afterEvent,
+        velocity: beforeEvent.velocity,
+      };
+    case "velocity":
+      return {
+        ...afterEvent,
+        time: beforeEvent.time,
+        duration: beforeEvent.duration,
+      };
+    case "position-velocity":
+      return afterEvent;
+  }
+}
+
+function makeSelectiveChange(
+  beforeEvent: DrumEvent,
+  afterEvent: DrumEvent,
+  sourceChange?: HumanizerChange,
+): HumanizerChange {
+  const shiftTicks = afterEvent.time - beforeEvent.time;
+  let shiftMs = 0;
+  if (sourceChange && shiftTicks === sourceChange.shiftTicks) {
+    shiftMs = sourceChange.shiftMs;
+  } else if (shiftTicks !== 0 && sourceChange?.shiftTicks) {
+    shiftMs = sourceChange.shiftMs * (shiftTicks / sourceChange.shiftTicks);
+  } else if (shiftTicks !== 0) {
+    shiftMs = shiftTicks;
+  }
+
+  return {
+    id: afterEvent.id,
+    originalId: sourceChange?.originalId,
+    role: beforeEvent.role,
+    originalTime: beforeEvent.time,
+    newTime: afterEvent.time,
+    shiftTicks,
+    shiftMs: Number.isFinite(shiftMs) ? shiftMs : 0,
+    originalVelocity: beforeEvent.velocity,
+    newVelocity: afterEvent.velocity,
+    velocityDelta: afterEvent.velocity - beforeEvent.velocity,
+    added: false,
+  };
 }
 
 function makeZeroChange(event: DrumEvent): HumanizerChange {

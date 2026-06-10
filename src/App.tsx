@@ -30,6 +30,7 @@ import {
   createAllRolesSelection,
   createNoRolesSelection,
   selectedRolesFromSelection,
+  type GrooveAdjustmentMode,
   type RoleSelection,
 } from "./engine/roleSelection";
 import {
@@ -59,6 +60,11 @@ const allRegionsId = "__all__";
 const writeDialogTitleId = "write-review-title";
 type PendingWriteAction = Extract<WriteSnapshotAction, "groove" | "reset">;
 type StatusTone = "info" | "success" | "error";
+const grooveAdjustmentOptions: Array<{ value: GrooveAdjustmentMode; label: string }> = [
+  { value: "position-velocity", label: "Position + velocity" },
+  { value: "position", label: "Position only" },
+  { value: "velocity", label: "Velocity only" },
+];
 
 export default function App() {
   const [session, setSession] = useState<AudiotoolSession | null>(null);
@@ -78,6 +84,8 @@ export default function App() {
   const [hasCheckedAuth, setHasCheckedAuth] = useState(false);
   const [pendingWriteAction, setPendingWriteAction] = useState<PendingWriteAction | null>(null);
   const [showChangedOnly, setShowChangedOnly] = useState(false);
+  const [grooveAdjustmentMode, setGrooveAdjustmentMode] =
+    useState<GrooveAdjustmentMode>("position-velocity");
   const [selectedRoles, setSelectedRoles] = useState<RoleSelection>(() =>
     createAllRolesSelection(),
   );
@@ -123,8 +131,9 @@ export default function App() {
         afterEvents: humanizeResult.events,
         changes: humanizeResult.changes,
         selectedRoles,
+        adjustmentMode: grooveAdjustmentMode,
       }),
-    [events, humanizeResult.changes, humanizeResult.events, selectedRoles],
+    [events, grooveAdjustmentMode, humanizeResult.changes, humanizeResult.events, selectedRoles],
   );
   const activeReviewEvents =
     pendingWriteAction === "reset" ? resetAllEvents : selectiveHumanizeResult.events;
@@ -439,6 +448,7 @@ export default function App() {
               action: "groove",
               regionId: selectedRegionId,
               selectedRoles: selectedRoleNames,
+              selectedAdjustmentMode: grooveAdjustmentMode,
               beforeEvents,
               afterEvents,
               summary,
@@ -621,6 +631,7 @@ export default function App() {
       selectedRegionId,
       selectedRegion: regionStatusName(regions, selectedRegionId),
       tempoBpm,
+      grooveAdjustmentMode,
       selectedRoles: selectedRoleNames,
       roleSelection: selectedRoles,
       writeReview,
@@ -977,6 +988,23 @@ export default function App() {
                 onChange={(event) => setStrength(Number(event.target.value))}
               />
 
+              <div className="adjustment-selector">
+                <span>Adjust</span>
+                <div className="segmented-control" aria-label="Groove adjustment mode">
+                  {grooveAdjustmentOptions.map((option) => (
+                    <button
+                      type="button"
+                      aria-pressed={grooveAdjustmentMode === option.value}
+                      data-active={grooveAdjustmentMode === option.value}
+                      key={option.value}
+                      onClick={() => setGrooveAdjustmentMode(option.value)}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               {loadedRoleOptions.length > 0 && (
                 <div className="role-selector">
                   <div className="role-selector-header">
@@ -1099,6 +1127,10 @@ export default function App() {
                 <strong>{Math.round(strength * 100)}%</strong>
               </div>
               <div className="summary-tile">
+                <span>Adjust</span>
+                <strong data-small="true">{grooveAdjustmentLabel(grooveAdjustmentMode)}</strong>
+              </div>
+              <div className="summary-tile">
                 <span>Hat Grid</span>
                 <strong>{hatSubdivisionLabel(humanizeResult.hatSubdivision)}</strong>
               </div>
@@ -1153,7 +1185,8 @@ export default function App() {
                     ) : (
                       <>
                         <strong>{activeReviewSelectedCount}</strong> selected of{" "}
-                        <strong>{writeReview.totalEvents}</strong> loaded notes.
+                        <strong>{writeReview.totalEvents}</strong> loaded notes using{" "}
+                        <strong>{grooveAdjustmentLabel(grooveAdjustmentMode).toLowerCase()}</strong>.
                       </>
                     )}
                   </p>
@@ -1316,6 +1349,17 @@ function formatSigned(value: number) {
 
 function hasSelectedRoles(roles: readonly DrumRole[]) {
   return roles.length > 0;
+}
+
+function grooveAdjustmentLabel(mode: GrooveAdjustmentMode) {
+  switch (mode) {
+    case "position":
+      return "Position only";
+    case "velocity":
+      return "Velocity only";
+    case "position-velocity":
+      return "Position + velocity";
+  }
 }
 
 function writeActionLabel(action: WriteSnapshotAction) {

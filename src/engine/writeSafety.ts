@@ -1,6 +1,7 @@
 import type { DrumEvent, DrumRole, HumanizerChange } from "../types/groove";
 import { velocityToMidi } from "./drumFormat";
 import { uniqueById } from "./eventIndex";
+import type { GrooveAdjustmentMode } from "./roleSelection";
 
 export type WriteSnapshotAction = "groove" | "reset" | "undo";
 
@@ -21,6 +22,7 @@ export type LastWriteSnapshot<TSummary> = {
   action: WriteSnapshotAction;
   regionId: string;
   selectedRoles?: DrumRole[];
+  selectedAdjustmentMode?: GrooveAdjustmentMode;
   beforeEvents: DrumEvent[];
   afterEvents: DrumEvent[];
   summary: TSummary;
