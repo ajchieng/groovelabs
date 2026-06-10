@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { defaultFramework } from "../data/humanizerFrameworks";
 import {
   TICKS_PER_BAR,
@@ -408,6 +408,44 @@ function createFourBarEighthHatPatternWithEmbellishments(velocity = 0.5): DrumEv
 
   return events;
 }
+
+describe("applyHumanizerFramework robustness", () => {
+  it("never produces NaN shiftMs when the project reports tempoBpm 0", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = applyHumanizerFramework(createDemoPattern(), testFramework, {
+      strength: 1,
+      tempoBpm: 0,
+      seed: "test",
+    });
+
+    expect(result.changes.length).toBeGreaterThan(0);
+    for (const change of result.changes) {
+      expect(Number.isNaN(change.shiftMs)).toBe(false);
+      expect(change.shiftMs).toBe(0);
+    }
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("dedupes duplicate event ids deterministically and warns", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const base = createDemoPattern();
+    const uniqueIds = new Set(base.map((event) => event.id));
+    // Re-append the first event under its existing id to force a collision.
+    const withDuplicate = [...base, { ...base[0], time: base[0].time + 10 }];
+
+    const result = applyHumanizerFramework(withDuplicate, testFramework, {
+      strength: 1,
+      tempoBpm: 92,
+      seed: "test",
+    });
+
+    expect(result.events).toHaveLength(uniqueIds.size);
+    expect(new Set(result.events.map((event) => event.id)).size).toBe(uniqueIds.size);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});
 
 function createKickPairPattern(): DrumEvent[] {
   return [

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import {
   AlertTriangle,
   Cable,
@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { GrooveVisualizer } from "./components/GrooveVisualizer";
+import { audiotoolConfig } from "./config";
 import { defaultFramework, humanizerFrameworks } from "./data/humanizerFrameworks";
 import { hatSubdivisionLabel, roleLabel, velocityToMidi } from "./engine/drumFormat";
 import { applyHumanizerFramework } from "./engine/humanizerEngine";
@@ -52,12 +53,12 @@ import {
   type WriteSnapshotAction,
 } from "./engine/writeSafety";
 
-const clientId = import.meta.env.VITE_AUDIOTOOL_CLIENT_ID?.trim() ?? "";
-const redirectUrl = "http://127.0.0.1:5173/";
+const { clientId, redirectUrl, oauthStoragePrefix: audiotoolOauthStoragePrefix } = audiotoolConfig;
 const lastProjectUrlKey = "groovelab:last-project-url";
-const audiotoolOauthStoragePrefix = `oidc_${clientId}_oidc_`;
 const allRegionsId = "__all__";
+const writeDialogTitleId = "write-review-title";
 type PendingWriteAction = Extract<WriteSnapshotAction, "groove" | "reset">;
+type StatusTone = "info" | "success" | "error";
 
 export default function App() {
   const [session, setSession] = useState<AudiotoolSession | null>(null);
@@ -72,6 +73,7 @@ export default function App() {
   const [strength, setStrength] = useState(1.4);
   const [humanizeSeed, setHumanizeSeed] = useState(1);
   const [status, setStatus] = useState("Checking Audiotool session");
+  const [statusTone, setStatusTone] = useState<StatusTone>("info");
   const [isBusy, setIsBusy] = useState(false);
   const [hasCheckedAuth, setHasCheckedAuth] = useState(false);
   const [pendingWriteAction, setPendingWriteAction] = useState<PendingWriteAction | null>(null);
@@ -81,6 +83,8 @@ export default function App() {
   );
   const [lastWriteSnapshot, setLastWriteSnapshot] =
     useState<LastWriteSnapshot<AudiotoolWriteSummary> | null>(null);
+  const writeDialogRef = useRef<HTMLDivElement>(null);
+  const writeTriggerRef = useRef<HTMLElement | null>(null);
 
   const hasAudiotoolClientId = clientId.length > 0;
   const isAuthenticated = session?.status === "authenticated";
@@ -151,7 +155,7 @@ export default function App() {
 
     async function checkSession() {
       if (!hasAudiotoolClientId) {
-        setStatus("Missing VITE_AUDIOTOOL_CLIENT_ID");
+        setStatusMessage("Missing VITE_AUDIOTOOL_CLIENT_ID", "error");
         setHasCheckedAuth(true);
         return;
       }
@@ -183,7 +187,7 @@ export default function App() {
             ...nextSession,
             error: undefined,
           });
-          setStatus("Cleaned stale Audiotool login state. Try logging in again.");
+          setStatusMessage("Cleaned stale Audiotool login state. Try logging in again.");
           return;
         }
 
@@ -192,7 +196,7 @@ export default function App() {
         }
 
         setSession(nextSession);
-        setStatus(
+        setStatusMessage(
           nextSession.status === "authenticated"
             ? `Connected as ${nextSession.userName}`
             : nextSession.error
@@ -201,7 +205,7 @@ export default function App() {
         );
       } catch (error) {
         if (isMounted) {
-          setStatus(errorMessage(error));
+          setStatusMessage(errorMessage(error), "error");
         }
       } finally {
         if (isMounted) {
@@ -224,9 +228,37 @@ export default function App() {
     };
   }, [project]);
 
+  // Treat the write-review panel as a modal dialog: when it opens, remember the
+  // trigger and move focus inside; when it closes, return focus to the trigger.
+  useEffect(() => {
+    if (!pendingWriteAction) {
+      return;
+    }
+
+    writeTriggerRef.current = document.activeElement as HTMLElement | null;
+    const dialog = writeDialogRef.current;
+    // Prefer the (enabled) Confirm button; fall back to the first focusable control,
+    // then the dialog itself, so focus always lands inside the modal.
+    const focusables = getFocusableElements(dialog);
+    const autofocusTarget =
+      focusables.find((element) => element.hasAttribute("data-autofocus")) ??
+      focusables[0] ??
+      dialog;
+    autofocusTarget?.focus();
+
+    return () => {
+      writeTriggerRef.current?.focus();
+    };
+  }, [pendingWriteAction]);
+
+  function setStatusMessage(text: string, tone: StatusTone = "info") {
+    setStatus(text);
+    setStatusTone(tone);
+  }
+
   async function login() {
     if (!hasAudiotoolClientId) {
-      setStatus("Missing VITE_AUDIOTOOL_CLIENT_ID");
+      setStatusMessage("Missing VITE_AUDIOTOOL_CLIENT_ID", "error");
       return;
     }
 
@@ -242,7 +274,7 @@ export default function App() {
       if (nextSession.status === "unauthenticated" && isInvalidOauthStateError(nextSession.error)) {
         clearAudiotoolOauthState();
         cleanAudiotoolCallbackUrl();
-        setStatus("Cleaned stale Audiotool login state. Try logging in again.");
+        setStatusMessage("Cleaned stale Audiotool login state. Try logging in again.");
         return;
       }
 
@@ -250,10 +282,10 @@ export default function App() {
       if (nextSession.status === "unauthenticated") {
         nextSession.login();
       } else {
-        setStatus(`Connected as ${nextSession.userName}`);
+        setStatusMessage(`Connected as ${nextSession.userName}`, "success");
       }
     } catch (error) {
-      setStatus(errorMessage(error));
+      setStatusMessage(errorMessage(error), "error");
     } finally {
       setIsBusy(false);
     }
@@ -261,13 +293,13 @@ export default function App() {
 
   async function openProject() {
     if (session?.status !== "authenticated") {
-      setStatus("Log in with Audiotool first");
+      setStatusMessage("Log in with Audiotool first", "error");
       return;
     }
 
     const trimmedProjectUrl = projectUrl.trim();
     if (!trimmedProjectUrl) {
-      setStatus("Paste an Audiotool project URL");
+      setStatusMessage("Paste an Audiotool project URL", "error");
       return;
     }
 
@@ -284,13 +316,14 @@ export default function App() {
       setHumanizeSeed((seed) => seed + 1);
       clearPendingWriteState();
       storeProjectUrl(trimmedProjectUrl);
-      setStatus(
+      setStatusMessage(
         snapshot.events.length > 0
           ? `Loaded ${snapshot.events.length} Audiotool notes`
           : "Project opened, no timeline note entities found",
+        "success",
       );
     } catch (error) {
-      setStatus(errorMessage(error));
+      setStatusMessage(errorMessage(error), "error");
     } finally {
       setIsBusy(false);
     }
@@ -298,7 +331,7 @@ export default function App() {
 
   async function reloadProject() {
     if (!project) {
-      setStatus("Open a project first");
+      setStatusMessage("Open a project first", "error");
       return;
     }
 
@@ -315,14 +348,15 @@ export default function App() {
       setTempoBpm(snapshot.tempoBpm);
       setHumanizeSeed((seed) => seed + 1);
       clearPendingWriteState();
-      setStatus(
+      setStatusMessage(
         `Reloaded ${snapshot.events.length} notes from ${regionStatusName(
           snapshot.regions,
           selectedRegionId,
         )}`,
+        "success",
       );
     } catch (error) {
-      setStatus(errorMessage(error));
+      setStatusMessage(errorMessage(error), "error");
     } finally {
       setIsBusy(false);
     }
@@ -344,14 +378,15 @@ export default function App() {
       setTempoBpm(snapshot.tempoBpm);
       setHumanizeSeed((seed) => seed + 1);
       clearPendingWriteState();
-      setStatus(
+      setStatusMessage(
         `Focused ${snapshot.events.length} notes in ${regionStatusName(
           snapshot.regions,
           regionId,
         )}`,
+        "success",
       );
     } catch (error) {
-      setStatus(errorMessage(error));
+      setStatusMessage(errorMessage(error), "error");
     } finally {
       setIsBusy(false);
     }
@@ -359,32 +394,32 @@ export default function App() {
 
   function reviewWriteBack() {
     if (!project) {
-      setStatus("Open a project before writing");
+      setStatusMessage("Open a project before writing", "error");
       return;
     }
 
     if (events.length === 0) {
-      setStatus("No notes loaded to write");
+      setStatusMessage("No notes loaded to write", "error");
       return;
     }
 
     if (!hasSelectedRoles(selectedRoleNames)) {
-      setStatus("Select at least one drum part before writing");
+      setStatusMessage("Select at least one drum part before writing", "error");
       return;
     }
 
     if (selectiveHumanizeResult.selectedCount === 0) {
-      setStatus("Selected drum parts have no loaded notes");
+      setStatusMessage("Selected drum parts have no loaded notes", "error");
       return;
     }
 
     setPendingWriteAction("groove");
-    setStatus("Review groove changes before writing");
+    setStatusMessage("Review groove changes before writing");
   }
 
   async function writeBack() {
     if (!project) {
-      setStatus("Open a project before writing");
+      setStatusMessage("Open a project before writing", "error");
       return;
     }
 
@@ -416,11 +451,12 @@ export default function App() {
         setLastWriteSnapshot(null);
       }
       setPendingWriteAction(null);
-      setStatus(
+      setStatusMessage(
         `Wrote ${summary.updated} notes, created ${summary.created}, skipped ${summary.skipped}. Loaded state now reflects the write.`,
+        "success",
       );
     } catch (error) {
-      setStatus(errorMessage(error));
+      setStatusMessage(errorMessage(error), "error");
     } finally {
       setIsBusy(false);
     }
@@ -428,27 +464,27 @@ export default function App() {
 
   function reviewResetPattern() {
     if (!project) {
-      setStatus("Open a project before resetting");
+      setStatusMessage("Open a project before resetting", "error");
       return;
     }
 
     if (events.length === 0) {
-      setStatus("No notes loaded to reset");
+      setStatusMessage("No notes loaded to reset", "error");
       return;
     }
 
     setPendingWriteAction("reset");
-    setStatus("Review reset before writing");
+    setStatusMessage("Review reset before writing");
   }
 
   async function resetPattern() {
     if (!project) {
-      setStatus("Open a project before resetting");
+      setStatusMessage("Open a project before resetting", "error");
       return;
     }
 
     if (events.length === 0) {
-      setStatus("No notes loaded to reset");
+      setStatusMessage("No notes loaded to reset", "error");
       return;
     }
 
@@ -485,11 +521,12 @@ export default function App() {
         setLastWriteSnapshot(null);
       }
       setPendingWriteAction(null);
-      setStatus(
+      setStatusMessage(
         `Reset ${summary.updated} notes. Hats to ${hatSubdivisionLabel(humanizeResult.hatSubdivision)}, kicks/snares to 16ths, velocity ${RESET_VELOCITY_MIDI}, skipped ${summary.skipped}`,
+        "success",
       );
     } catch (error) {
-      setStatus(errorMessage(error));
+      setStatusMessage(errorMessage(error), "error");
     } finally {
       setIsBusy(false);
     }
@@ -508,17 +545,45 @@ export default function App() {
 
   function cancelPendingWrite() {
     setPendingWriteAction(null);
-    setStatus("Write canceled");
+    setStatusMessage("Write canceled");
+  }
+
+  function handleWriteDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      cancelPendingWrite();
+      return;
+    }
+
+    if (event.key !== "Tab") {
+      return;
+    }
+
+    const focusables = getFocusableElements(writeDialogRef.current);
+    if (focusables.length === 0) {
+      return;
+    }
+
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement;
+    if (event.shiftKey && active === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
+    }
   }
 
   async function undoLastWrite() {
     if (!lastWriteSnapshot) {
-      setStatus("No write to undo");
+      setStatusMessage("No write to undo", "error");
       return;
     }
 
     if (!project) {
-      setStatus("Open a project before undoing");
+      setStatusMessage("Open a project before undoing", "error");
       return;
     }
 
@@ -533,11 +598,12 @@ export default function App() {
       setEvents(lastWriteSnapshot.beforeEvents);
       setHumanizeSeed((seed) => seed + 1);
       clearPendingWriteState();
-      setStatus(
+      setStatusMessage(
         `Undid ${writeActionLabel(lastWriteSnapshot.action).toLowerCase()}: wrote ${summary.updated} notes, created ${summary.created}, skipped ${summary.skipped}`,
+        "success",
       );
     } catch (error) {
-      setStatus(errorMessage(error));
+      setStatusMessage(errorMessage(error), "error");
     } finally {
       setIsBusy(false);
     }
@@ -545,7 +611,7 @@ export default function App() {
 
   function exportSnapshot() {
     if (events.length === 0) {
-      setStatus("No loaded notes to export");
+      setStatusMessage("No loaded notes to export", "error");
       return;
     }
 
@@ -571,8 +637,9 @@ export default function App() {
     )}-${timestampForFilename()}.json`;
     anchor.click();
     window.setTimeout(() => URL.revokeObjectURL(snapshotUrl), 0);
-    setStatus(
+    setStatusMessage(
       `Exported ${events.length} notes from ${regionStatusName(regions, selectedRegionId)}`,
+      "success",
     );
   }
 
@@ -592,12 +659,29 @@ export default function App() {
 
   function selectAllRoles() {
     setSelectedRoles(createAllRolesSelection());
-    setStatus("Selected all drum parts");
+    setStatusMessage("Selected all drum parts");
   }
 
   function selectNoRoles() {
     setSelectedRoles(createNoRolesSelection());
-    setStatus("Deselected all drum parts");
+    setStatusMessage("Deselected all drum parts");
+  }
+
+  function handleFrameworkKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    const isPrev = event.key === "ArrowUp" || event.key === "ArrowLeft";
+    const isNext = event.key === "ArrowDown" || event.key === "ArrowRight";
+    if (!isPrev && !isNext) {
+      return;
+    }
+
+    event.preventDefault();
+    const count = humanizerFrameworks.length;
+    const nextIndex = isPrev ? (index - 1 + count) % count : (index + 1) % count;
+    setSelectedFrameworkId(humanizerFrameworks[nextIndex].id);
+
+    const radios =
+      event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]');
+    radios?.[nextIndex]?.focus();
   }
 
   function chooseDifferentProject() {
@@ -607,7 +691,7 @@ export default function App() {
     setRegions([]);
     setSelectedRegionId(allRegionsId);
     clearPendingWriteState();
-    setStatus("Choose an Audiotool project");
+    setStatusMessage("Choose an Audiotool project");
   }
 
   function logout() {
@@ -621,7 +705,7 @@ export default function App() {
     setRegions([]);
     setSelectedRegionId(allRegionsId);
     clearPendingWriteState();
-    setStatus("Logged out");
+    setStatusMessage("Logged out");
   }
 
   function resetLogin() {
@@ -634,7 +718,7 @@ export default function App() {
     setSelectedRegionId(allRegionsId);
     setHasCheckedAuth(false);
     clearPendingWriteState();
-    setStatus("Reset Audiotool login state");
+    setStatusMessage("Reset Audiotool login state");
     window.location.assign(redirectUrl);
   }
 
@@ -668,7 +752,7 @@ export default function App() {
     await closeProject(project);
     const nextProject = await session.openProject(trimmedProjectUrl);
     setProject(nextProject);
-    setStatus("Reconnected to Audiotool project");
+    setStatusMessage("Reconnected to Audiotool project", "success");
     return nextProject;
   }
 
@@ -688,8 +772,14 @@ export default function App() {
             <p>Drum humanizer for Audiotool notes</p>
           </div>
         </div>
-        <div className="status-pill" data-busy={isBusy}>
-          {isBusy ? "Working" : status}
+        <div
+          className="status-pill"
+          role="status"
+          aria-live="polite"
+          data-busy={isBusy}
+          data-tone={statusTone}
+        >
+          {isBusy ? `Working… ${status}` : status}
         </div>
       </header>
 
@@ -751,6 +841,7 @@ export default function App() {
                 type="button"
                 onClick={openProject}
                 disabled={isBusy || !projectUrl.trim()}
+                title={!projectUrl.trim() ? "Paste an Audiotool project URL first" : undefined}
               >
                 <Cable size={17} />
                 Open Project
@@ -849,19 +940,26 @@ export default function App() {
                 <h2>Groove</h2>
               </div>
 
-              <div className="framework-list" role="listbox" aria-label="Humanizer framework">
-                {humanizerFrameworks.map((framework) => (
-                  <button
-                    className="framework-button"
-                    type="button"
-                    key={framework.id}
-                    data-active={framework.id === selectedFramework.id}
-                    onClick={() => setSelectedFrameworkId(framework.id)}
-                  >
-                    <span>{framework.name}</span>
-                    <small>{framework.description}</small>
-                  </button>
-                ))}
+              <div className="framework-list" role="radiogroup" aria-label="Humanizer framework">
+                {humanizerFrameworks.map((framework, index) => {
+                  const active = framework.id === selectedFramework.id;
+                  return (
+                    <button
+                      className="framework-button"
+                      type="button"
+                      role="radio"
+                      aria-checked={active ? "true" : "false"}
+                      tabIndex={active ? 0 : -1}
+                      key={framework.id}
+                      data-active={active}
+                      onClick={() => setSelectedFrameworkId(framework.id)}
+                      onKeyDown={(event) => handleFrameworkKeyDown(event, index)}
+                    >
+                      <span>{framework.name}</span>
+                      <small>{framework.description}</small>
+                    </button>
+                  );
+                })}
               </div>
 
               <label className="range-label" htmlFor="humanizer-strength">
@@ -931,6 +1029,15 @@ export default function App() {
                     !hasSelectedRoles(selectedRoleNames) ||
                     selectiveHumanizeResult.selectedCount === 0
                   }
+                  title={
+                    events.length === 0
+                      ? "Load a project with notes first"
+                      : !hasSelectedRoles(selectedRoleNames)
+                        ? "Select at least one drum part to review"
+                        : selectiveHumanizeResult.selectedCount === 0
+                          ? "Selected drum parts have no loaded notes"
+                          : undefined
+                  }
                 >
                   <Save size={17} />
                   Review Groove
@@ -960,9 +1067,11 @@ export default function App() {
                 <h3>{selectedFramework.name}</h3>
                 <p>{humanizeResult.explanation}</p>
               </div>
-              <div className="segmented-control" aria-label="Visualizer view">
+              <div className="segmented-control" role="group" aria-label="Visualizer view">
                 <button
                   type="button"
+                  aria-label="Show all notes"
+                  aria-pressed={!showChangedOnly}
                   data-active={!showChangedOnly}
                   onClick={() => setShowChangedOnly(false)}
                 >
@@ -970,6 +1079,8 @@ export default function App() {
                 </button>
                 <button
                   type="button"
+                  aria-label="Show changed notes only"
+                  aria-pressed={showChangedOnly}
                   data-active={showChangedOnly}
                   onClick={() => setShowChangedOnly(true)}
                 >
@@ -1018,11 +1129,19 @@ export default function App() {
             </div>
 
             {pendingWriteAction && (
-              <div className="write-review-panel">
+              <div
+                className="write-review-panel"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby={writeDialogTitleId}
+                tabIndex={-1}
+                ref={writeDialogRef}
+                onKeyDown={handleWriteDialogKeyDown}
+              >
                 <div className="write-review-copy">
                   <div className="section-title">
                     <AlertTriangle size={18} />
-                    <h3>{writeActionLabel(pendingWriteAction)} Review</h3>
+                    <h3 id={writeDialogTitleId}>{writeActionLabel(pendingWriteAction)} Review</h3>
                   </div>
                   <p>
                     {writeActionLabel(pendingWriteAction)} will target{" "}
@@ -1080,6 +1199,7 @@ export default function App() {
                   <button
                     className="primary-button"
                     type="button"
+                    data-autofocus
                     onClick={() => {
                       void confirmPendingWrite();
                     }}
@@ -1245,6 +1365,16 @@ function clearAudiotoolOauthState() {
       window.localStorage.removeItem(key);
     }
   }
+}
+
+function getFocusableElements(container: HTMLElement | null) {
+  if (!container) {
+    return [];
+  }
+
+  const selector =
+    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+  return Array.from(container.querySelectorAll<HTMLElement>(selector));
 }
 
 function redirectToCanonicalOrigin() {

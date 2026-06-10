@@ -1,5 +1,6 @@
 import type { DrumEvent, DrumRole, HumanizerChange } from "../types/groove";
 import { velocityToMidi } from "./drumFormat";
+import { uniqueById } from "./eventIndex";
 
 export type WriteSnapshotAction = "groove" | "reset" | "undo";
 
@@ -35,8 +36,12 @@ export function summarizeWriteReview(
   afterEvents: readonly DrumEvent[],
   changes: readonly HumanizerChange[] = [],
 ): WriteReviewSummary {
-  const beforeById = new Map(beforeEvents.map((event) => [event.id, event]));
-  const changesById = new Map(changes.map((change) => [change.id, change]));
+  const uniqueAfter = uniqueById(afterEvents, "summarizeWriteReview.after");
+  const uniqueBefore = uniqueById(beforeEvents, "summarizeWriteReview.before");
+  const beforeById = new Map(uniqueBefore.map((event) => [event.id, event]));
+  const changesById = new Map(
+    uniqueById(changes, "summarizeWriteReview.changes").map((change) => [change.id, change]),
+  );
   let changedEvents = 0;
   let unchangedEvents = 0;
   let unchangedWritableEvents = 0;
@@ -46,7 +51,7 @@ export function summarizeWriteReview(
   let maxShiftMs = 0;
   let maxVelocityDeltaMidi = 0;
 
-  for (const event of afterEvents) {
+  for (const event of uniqueAfter) {
     const before = beforeById.get(event.id);
     const change = changesById.get(event.id);
 
@@ -89,20 +94,19 @@ export function summarizeWriteReview(
     }
   }
 
-  const missingTargetEvents = beforeEvents.filter(
-    (event) => !afterEvents.some((after) => after.id === event.id),
-  );
+  const afterIds = new Set(uniqueAfter.map((event) => event.id));
+  const missingTargetEvents = uniqueBefore.filter((event) => !afterIds.has(event.id));
   unsupportedSourceEvents += missingTargetEvents.filter((event) => !isWritableSource(event)).length;
 
   return {
-    totalEvents: afterEvents.length,
+    totalEvents: uniqueAfter.length,
     changedEvents,
     unchangedEvents,
     addedEvents,
     unknownEvents,
     expectedSkippedEvents: unchangedWritableEvents + unsupportedSourceEvents,
     unsupportedSourceEvents,
-    includesPatternSteps: afterEvents.some(
+    includesPatternSteps: uniqueAfter.some(
       (event) => event.source?.kind === "audiotool-pattern-step",
     ),
     maxShiftMs: Math.round(maxShiftMs),

@@ -93,12 +93,53 @@ export function detectDrumRoles(
     addRhythmScore(scores, event, pitchCounts, pitchProfiles, ticksPerBeat);
 
     const [role, score] = pickBestRole(scores);
+
+    // Rhythm and pitch can't tell an open hat from a closed one, so when the lane name
+    // says which it is, that wins. Without this, a named "open hat" playing straight
+    // 16ths is outscored by the closed-hat rhythm/pitch inference.
+    const explicitHat = explicitHatRole([event.sampleName, event.padName, event.stripName]);
+    if (explicitHat) {
+      return {
+        ...event,
+        role: explicitHat,
+        confidence: Math.max(score, 0.92),
+      };
+    }
+
     return {
       ...event,
       role,
       confidence: score,
     };
   });
+}
+
+// An unambiguous open/closed hat signal from the per-lane name fields. Returns undefined
+// for a bare "hat" (which doesn't say which kind) or when both signals are present.
+function explicitHatRole(values: Array<string | undefined>): DrumRole | undefined {
+  const { compact, text, tokens } = normalizeNameValues(values);
+  if (!text) {
+    return undefined;
+  }
+
+  const isOpen =
+    /\b(open|op)\s*(hi\s*)?hat\b|\b(hi\s*)?hat\s*(open|op)\b/.test(text) ||
+    /(openhihat|openhat|ophat|ohh)/.test(compact) ||
+    tokens.has("oh") ||
+    tokens.has("ohh");
+  const isClosed =
+    /\b(closed|close|clsd|cl)\s*(hi\s*)?hat\b|\b(hi\s*)?hat\s*(closed|close|clsd|cl)\b/.test(text) ||
+    /(closedhihat|closedhat|closehihat|closehat|clsdhat|clhat|chh)/.test(compact) ||
+    tokens.has("ch") ||
+    tokens.has("chh");
+
+  if (isOpen && !isClosed) {
+    return "open_hat";
+  }
+  if (isClosed && !isOpen) {
+    return "closed_hat";
+  }
+  return undefined;
 }
 
 function countByPitch(events: DrumEvent[]) {

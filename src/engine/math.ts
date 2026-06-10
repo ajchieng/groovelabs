@@ -3,11 +3,19 @@ export function clamp(value: number, min: number, max: number) {
 }
 
 export function ticksToMs(ticks: number, tempoBpm: number, ticksPerBeat: number) {
+  // A project reporting an invalid tempo (0, negative, or NaN) would otherwise
+  // produce Infinity/NaN here and poison every downstream shift report.
+  if (!Number.isFinite(tempoBpm) || tempoBpm <= 0) {
+    return 0;
+  }
   const msPerBeat = 60_000 / tempoBpm;
   return (ticks / ticksPerBeat) * msPerBeat;
 }
 
 export function msToTicks(ms: number, tempoBpm: number, ticksPerBeat: number) {
+  if (!Number.isFinite(tempoBpm) || tempoBpm <= 0) {
+    return 0;
+  }
   const msPerBeat = 60_000 / tempoBpm;
   return (ms / msPerBeat) * ticksPerBeat;
 }

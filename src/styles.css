@@ -107,6 +107,19 @@ button:disabled {
   font-size: 0.9rem;
 }
 
+.status-pill[data-tone="success"] {
+  color: #14532d;
+  background: #e7f6ec;
+  border-color: #86d6a4;
+}
+
+.status-pill[data-tone="error"] {
+  color: #7f1d1d;
+  background: #fdeaea;
+  border-color: #f0a3a3;
+}
+
+/* Busy takes visual precedence over tone while an operation is in flight. */
 .status-pill[data-busy="true"] {
   color: #7c2d12;
   background: #fff4d8;
@@ -269,6 +282,21 @@ button:disabled {
 .mini-button:hover:not(:disabled),
 .framework-button:hover {
   transform: translateY(-1px);
+}
+
+/* Visible keyboard focus for every interactive control. :focus-visible keeps the
+   ring from showing on plain mouse clicks. */
+.primary-button:focus-visible,
+.secondary-button:focus-visible,
+.icon-button:focus-visible,
+.mini-button:focus-visible,
+.framework-button:focus-visible,
+.segmented-control button:focus-visible,
+.role-toggle:focus-within,
+.range-input:focus-visible,
+.select-input:focus-visible {
+  outline: 2px solid #0f766e;
+  outline-offset: 2px;
 }
 
 .primary-button {

@@ -1,4 +1,5 @@
 import type { DrumEvent, DrumRole, HumanizerChange, RoleSummary } from "../types/groove";
+import { uniqueById } from "./eventIndex";
 
 export const DRUM_ROLE_ORDER: readonly DrumRole[] = [
   "kick",
@@ -43,16 +44,20 @@ export function applyRoleSelection({
   changes: readonly HumanizerChange[];
   selectedRoles: RoleSelection;
 }): SelectiveRoleResult {
-  const beforeById = new Map(beforeEvents.map((event) => [event.id, event]));
-  const afterIds = new Set(afterEvents.map((event) => event.id));
-  const changesById = new Map(changes.map((change) => [change.id, change]));
+  const uniqueBefore = uniqueById(beforeEvents, "applyRoleSelection.before");
+  const uniqueAfter = uniqueById(afterEvents, "applyRoleSelection.after");
+  const beforeById = new Map(uniqueBefore.map((event) => [event.id, event]));
+  const afterIds = new Set(uniqueAfter.map((event) => event.id));
+  const changesById = new Map(
+    uniqueById(changes, "applyRoleSelection.changes").map((change) => [change.id, change]),
+  );
   const selectedRoleList = selectedRolesFromSelection(selectedRoles);
   const roleCounts = createEmptyRoleSummary();
   let selectedCount = 0;
   const selectiveEvents: DrumEvent[] = [];
   const selectiveChanges: HumanizerChange[] = [];
 
-  for (const afterEvent of afterEvents) {
+  for (const afterEvent of uniqueAfter) {
     const beforeEvent = beforeById.get(afterEvent.id);
     const role = beforeEvent?.role ?? afterEvent.role;
     roleCounts[role] += 1;
@@ -76,7 +81,7 @@ export function applyRoleSelection({
     }
   }
 
-  for (const beforeEvent of beforeEvents) {
+  for (const beforeEvent of uniqueBefore) {
     if (afterIds.has(beforeEvent.id)) {
       continue;
     }

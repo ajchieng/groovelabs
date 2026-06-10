@@ -31,6 +31,33 @@ describe("detectDrumRoles", () => {
     expect(roleById(detected, "open-hat")).toBe("open_hat");
   });
 
+  it("trusts an explicit open-hat name over closed-hat rhythm and pitch inference", () => {
+    const events: DrumEvent[] = [];
+
+    // A dense closed hat on every 16th and a named open hat on the offbeat 8ths. Rhythm
+    // and pitch alone would call both closed hats; only the lane name distinguishes them.
+    for (let step = 0; step < 16; step += 1) {
+      events.push(
+        event(`closed-${step}`, step * (TICKS_PER_BEAT / 4), 61, { padName: "Closed Hat" }),
+      );
+    }
+    for (let step = 0; step < 8; step += 1) {
+      events.push(
+        event(`open-${step}`, (step * 2 + 1) * (TICKS_PER_BEAT / 4), 62, { padName: "Open Hat" }),
+      );
+    }
+    events.push(
+      event("snare-2", TICKS_PER_BEAT, 60, { padName: "Snare" }),
+      event("snare-4", TICKS_PER_BEAT * 3, 60, { padName: "Snare" }),
+    );
+
+    const detected = detectDrumRoles(events);
+
+    expect(rolesByPrefix(detected, "open")).toEqual(new Set(["open_hat"]));
+    expect(rolesByPrefix(detected, "closed")).toEqual(new Set(["closed_hat"]));
+    expect(rolesByPrefix(detected, "snare")).toEqual(new Set(["snare"]));
+  });
+
   it("lets per-note lane names beat broad device names", () => {
     const detected = detectDrumRoles([
       event("snare", TICKS_PER_BEAT, 10, {

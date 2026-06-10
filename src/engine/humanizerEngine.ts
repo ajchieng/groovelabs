@@ -13,6 +13,8 @@ import {
 import { midiToVelocity, velocityToMidi } from "./drumFormat";
 import { clamp, msToTicks, nearestGridDistance, seededSigned, ticksToMs } from "./math";
 import { detectDrumRoles } from "./roleDetection";
+import { uniqueById } from "./eventIndex";
+import { sanitizeFrameworkParameters } from "./frameworkParameters";
 
 type TransformContext = {
   framework: HumanizerFramework;
@@ -54,7 +56,17 @@ export function applyHumanizerFramework(
   const ticksPerBeat = options.ticksPerBeat ?? TICKS_PER_BEAT;
   const strength = clamp(options.strength, 0, 4);
   const seed = options.seed ?? framework.id;
-  const detectedEvents = detectDrumRoles(inputEvents, { ticksPerBeat });
+  if (!Number.isFinite(options.tempoBpm) || options.tempoBpm <= 0) {
+    console.warn(
+      `applyHumanizerFramework: invalid tempoBpm (${options.tempoBpm}); shift millisecond reporting will be 0`,
+    );
+  }
+  const safeFramework: HumanizerFramework = {
+    ...framework,
+    parameters: sanitizeFrameworkParameters(framework.parameters),
+  };
+  const uniqueInput = uniqueById(inputEvents, "applyHumanizerFramework");
+  const detectedEvents = detectDrumRoles(uniqueInput, { ticksPerBeat });
   const events = [...detectedEvents].sort((a, b) => a.time - b.time || a.id.localeCompare(b.id));
   const hats = events.filter((event) => HAT_ROLES.has(event.role));
   const snareEvents = events.filter((event) => SNARE_ROLES.has(event.role));
@@ -66,7 +78,7 @@ export function applyHumanizerFramework(
   const hatSubdivision = inferHatSubdivision(hats, ticksPerBeat, eighthHatGrid);
 
   const context: TransformContext = {
-    framework,
+    framework: safeFramework,
     strength,
     seed,
     tempoBpm: options.tempoBpm,
@@ -77,7 +89,7 @@ export function applyHumanizerFramework(
     averageHatMidi: averageMidi(hats),
     snareBackbeatsById: mapSnareBackbeats(snareEvents, ticksPerBeat),
     snareTimes: snareEvents.map((event) => event.time),
-    kickVelocityDeltasById: mapKickVelocityDeltas(kickEvents, ticksPerBeat, framework),
+    kickVelocityDeltasById: mapKickVelocityDeltas(kickEvents, ticksPerBeat, safeFramework),
   };
   // This has to be calculated after the context exists because it uses the same target
   // velocity logic as the actual hat transform.

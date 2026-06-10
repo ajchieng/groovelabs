@@ -75,7 +75,11 @@ export function GrooveVisualizer({
           </span>
         ))}
       </div>
-      <svg viewBox={`0 0 ${width} ${height}`} role="img">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label="Before-and-after drum timing, with each hit grouped by role"
+      >
         {roles.map((role) => (
           <g className={selectedRoles[role] ? "role-lane" : "role-lane muted-role"} key={role}>
             <text className="lane-label" x="18" y={yForRole(role) + 5}>

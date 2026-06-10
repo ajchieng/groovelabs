@@ -97,6 +97,11 @@ export type AudiotoolSession =
       openProject: (projectUrl: string) => Promise<AudiotoolProject>;
     };
 
+// Resolves an Audiotool sample backend name (e.g. "samples/{uuid}") to its human-readable
+// display name. The synced document only stores the backend name, so role detection needs
+// this to see lane names like "open hat" or "snare".
+export type SampleNameResolver = (backendName: string) => Promise<string | undefined>;
+
 export async function createAudiotoolSession({
   clientId,
   redirectUrl,
@@ -118,6 +123,11 @@ export async function createAudiotoolSession({
     };
   }
 
+  const resolveSampleName: SampleNameResolver = async (backendName) => {
+    const meta = await at.samples.get(backendName);
+    return meta instanceof Error ? undefined : meta.displayName || undefined;
+  };
+
   return {
     status: "authenticated",
     userName: at.userName,
@@ -125,13 +135,20 @@ export async function createAudiotoolSession({
     openProject: async (projectUrl: string) => {
       const nexus = (await at.open(projectUrl)) as unknown as NexusDocument;
       await nexus.start();
-      return new AudiotoolProject(nexus);
+      return new AudiotoolProject(nexus, resolveSampleName);
     },
   };
 }
 
 export class AudiotoolProject {
-  constructor(private readonly nexus: NexusDocument) {}
+  // Cache resolved display names for the lifetime of the project so reloads and region
+  // switches don't refetch the same sample metadata.
+  private readonly sampleNameCache = new Map<string, string>();
+
+  constructor(
+    private readonly nexus: NexusDocument,
+    private readonly resolveSampleName?: SampleNameResolver,
+  ) {}
 
   async close() {
     await this.nexus.stop();
@@ -148,7 +165,7 @@ export class AudiotoolProject {
 
     const notes = this.getEntities("note");
     const noteCountsByCollection = countNotesByCollection(notes);
-    const sampleNamesByLocation = readSampleNamesByLocation(this.getEntities("sample"));
+    const sampleNamesByLocation = await this.resolveSampleNamesByLocation();
     const pitchContexts = buildNotePitchContexts(
       notes,
       regionContext.byCollection,
@@ -214,8 +231,25 @@ export class AudiotoolProject {
       ),
     ];
 
+    const detectedEvents = detectDrumRoles(events);
+
+    if (import.meta.env.DEV) {
+      // TEMP diagnostic: shows whether sample display names resolved and what role each
+      // lane got. Remove once machiniste hat detection is confirmed.
+      console.info("[groovelab] resolved sample names:", [...sampleNamesByLocation.values()]);
+      console.info(
+        "[groovelab] lane -> role:",
+        detectedEvents.map((event) => ({
+          name: event.sampleName ?? event.padName ?? event.stripName,
+          device: event.deviceType,
+          pitch: event.pitch,
+          role: event.role,
+        })),
+      );
+    }
+
     return {
-      events: detectDrumRoles(events),
+      events: detectedEvents,
       regions,
       tempoBpm,
     };
@@ -486,6 +520,78 @@ export class AudiotoolProject {
 
     return stripNamesByOutput;
   }
+
+  // Map each sample entity's location to a human-readable name. The synced document only
+  // stores the backend name ("samples/{uuid}"), so we resolve display names via the
+  // injected Sample API resolver, falling back to the raw stored name when unavailable.
+  private async resolveSampleNamesByLocation(): Promise<Map<string, string>> {
+    const samples = this.getEntities("sample");
+
+    const pendingBackendNames = new Set<string>();
+    for (const sample of samples) {
+      const backendName = readString(sample, ["sampleName"]);
+      if (backendName && !this.sampleNameCache.has(backendName)) {
+        pendingBackendNames.add(backendName);
+      }
+    }
+
+    await Promise.all(
+      [...pendingBackendNames].map(async (backendName) => {
+        const displayName = await this.resolveSampleDisplayName(backendName);
+        if (displayName) {
+          this.sampleNameCache.set(backendName, displayName);
+        }
+      }),
+    );
+
+    const sampleNames = new Map<string, string>();
+    for (const sample of samples) {
+      const key = locationKey(sample.location);
+      if (!key) {
+        continue;
+      }
+      const backendName = readString(sample, ["sampleName"]);
+      const resolved = backendName ? this.sampleNameCache.get(backendName) : undefined;
+      // Preserve the original behavior as a fallback when resolution is unavailable.
+      const fallback = readString(sample, ["displayName", "sampleName", "name"]);
+      const name = resolved ?? fallback;
+      if (name) {
+        sampleNames.set(key, name);
+      }
+    }
+
+    if (import.meta.env.DEV) {
+      // TEMP diagnostic: how many samples exist, their backend names, and what each
+      // resolved to. Remove once machiniste hat detection is confirmed.
+      console.info(
+        "[groovelab] sample resolution:",
+        samples.map((sample) => {
+          const backendName = readString(sample, ["sampleName"]);
+          return {
+            backendName,
+            resolved: backendName ? this.sampleNameCache.get(backendName) : undefined,
+            hasResolver: Boolean(this.resolveSampleName),
+          };
+        }),
+      );
+    }
+
+    return sampleNames;
+  }
+
+  private async resolveSampleDisplayName(backendName: string): Promise<string | undefined> {
+    if (!this.resolveSampleName) {
+      return undefined;
+    }
+    try {
+      return await this.resolveSampleName(backendName);
+    } catch (error) {
+      if (import.meta.env.DEV) {
+        console.warn("[groovelab] sample name resolve failed for", backendName, error);
+      }
+      return undefined;
+    }
+  }
 }
 
 function countNotesByCollection(notes: NexusEntity[]) {
@@ -755,20 +861,6 @@ function makePatternEvent(
 
 function readPatternLength(pattern: NexusEntity, fallback: number) {
   return Math.max(0, Math.min(fallback, Math.round(readNumber(pattern, ["length"], fallback))));
-}
-
-function readSampleNamesByLocation(samples: NexusEntity[]) {
-  const sampleNames = new Map<string, string>();
-
-  for (const sample of samples) {
-    const key = locationKey(sample.location);
-    const sampleName = readString(sample, ["displayName", "sampleName", "name"]);
-    if (key && sampleName) {
-      sampleNames.set(key, sampleName);
-    }
-  }
-
-  return sampleNames;
 }
 
 function buildNotePitchContexts(
